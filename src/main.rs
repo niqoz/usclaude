@@ -12,7 +12,8 @@ use ksni::blocking::TrayMethods;
 use serde_json::Value;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const REFRESH: Duration = Duration::from_secs(90);
+/// Intervalles de rafraîchissement proposés (secondes, libellé) ; le premier par défaut.
+const INTERVALS: [(u64, &str); 4] = [(90, "90 s"), (180, "3 min"), (300, "5 min"), (600, "10 min")];
 
 /// Limites connues, dans l'ordre d'affichage.
 const KNOWN: [(&str, &str); 4] = [
@@ -135,6 +136,32 @@ fn home() -> String {
 fn autostart_path() -> String {
     let config = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}/.config", home()));
     format!("{config}/autostart/usclaude.desktop")
+}
+
+fn interval_path() -> String {
+    let config = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}/.config", home()));
+    format!("{config}/usclaude/interval")
+}
+
+/// Intervalle enregistré s'il fait partie de la liste, sinon celui par défaut.
+fn parse_interval(text: &str) -> u64 {
+    text.trim()
+        .parse()
+        .ok()
+        .filter(|s| INTERVALS.iter().any(|(v, _)| v == s))
+        .unwrap_or(INTERVALS[0].0)
+}
+
+fn load_interval() -> u64 {
+    parse_interval(&std::fs::read_to_string(interval_path()).unwrap_or_default())
+}
+
+fn save_interval(secs: u64) -> std::io::Result<()> {
+    let path = interval_path();
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, format!("{secs}\n"))
 }
 
 /// Chemin du binaire en cours. Après une réinstallation, Linux le suffixe de « (deleted) ».
@@ -270,6 +297,7 @@ fn draw_icon(session: Option<f64>, week: Option<f64>) -> ksni::Icon {
 struct UsageTray {
     state: Option<Result<Usage, String>>,
     refresh: Sender<()>,
+    interval: u64,
 }
 
 impl ksni::Tray for UsageTray {
@@ -302,7 +330,7 @@ impl ksni::Tray for UsageTray {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::{CheckmarkItem, MenuItem, StandardItem};
+        use ksni::menu::{CheckmarkItem, MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
         let info = |label: String| -> MenuItem<Self> {
             StandardItem { label, enabled: false, ..Default::default() }.into()
         };
@@ -330,6 +358,33 @@ impl ksni::Tray for UsageTray {
                 activate: Box::new(|t: &mut Self| {
                     let _ = t.refresh.send(());
                 }),
+                ..Default::default()
+            }
+            .into(),
+        );
+        items.push(
+            SubMenu {
+                label: "Réglages".into(),
+                icon_name: "preferences-system".into(),
+                submenu: vec![
+                    info("Rafraîchir toutes les :".into()),
+                    RadioGroup {
+                        selected: INTERVALS.iter().position(|(s, _)| *s == self.interval).unwrap_or(0),
+                        select: Box::new(|t: &mut Self, i| {
+                            t.interval = INTERVALS[i].0;
+                            if let Err(e) = save_interval(t.interval) {
+                                eprintln!("usclaude : réglage non enregistré : {e}");
+                            }
+                            // Réveille la boucle pour appliquer le nouvel intervalle tout de suite.
+                            let _ = t.refresh.send(());
+                        }),
+                        options: INTERVALS
+                            .iter()
+                            .map(|(_, label)| RadioItem { label: (*label).into(), ..Default::default() })
+                            .collect(),
+                    }
+                    .into(),
+                ],
                 ..Default::default()
             }
             .into(),
@@ -391,7 +446,7 @@ fn main() {
     };
 
     let (tx, rx) = mpsc::channel();
-    let handle = UsageTray { state: None, refresh: tx }
+    let handle = UsageTray { state: None, refresh: tx, interval: load_interval() }
         .spawn()
         .expect("zone de notification indisponible");
 
@@ -402,8 +457,9 @@ fn main() {
             (Some(Ok(_)), Err(e)) => eprintln!("usclaude : {e}"),
             (_, r) => t.state = Some(r),
         });
-        // Attend l'échéance ou un clic sur « Actualiser ».
-        let _ = rx.recv_timeout(REFRESH);
+        // Attend l'échéance, un clic sur « Actualiser » ou un changement de réglage.
+        let secs = handle.update(|t| t.interval).unwrap_or(INTERVALS[0].0);
+        let _ = rx.recv_timeout(Duration::from_secs(secs));
     }
 }
 
@@ -451,6 +507,14 @@ mod tests {
         assert!(!autostart_enabled(None));
         assert!(autostart_enabled(Some("[Desktop Entry]\nExec=usclaude\n")));
         assert!(!autostart_enabled(Some("[Desktop Entry]\nHidden=true\n")));
+    }
+
+    #[test]
+    fn interval_setting() {
+        assert_eq!(parse_interval("300\n"), 300);
+        assert_eq!(parse_interval(""), 90);
+        assert_eq!(parse_interval("42"), 90, "valeur hors liste refusée");
+        assert_eq!(parse_interval("abc"), 90);
     }
 
     #[test]
