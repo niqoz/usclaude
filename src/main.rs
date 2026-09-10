@@ -146,14 +146,48 @@ fn read_codex_token() -> Result<(String, String), String> {
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
     let json: Value = serde_json::from_str(&text).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
     let tokens = &json["tokens"];
-    match (tokens["access_token"].as_str(), tokens["account_id"].as_str()) {
-        (Some(token), Some(account)) => Ok((token.to_owned(), account.to_owned())),
-        _ => Err(tr(
+    let (Some(token), Some(account)) = (tokens["access_token"].as_str(), tokens["account_id"].as_str()) else {
+        return Err(tr(
             "pas de connexion ChatGPT (lancer codex login)",
             "not signed in with ChatGPT (run codex login)",
         )
-        .into()),
+        .into());
+    };
+    if jwt_exp(token).is_some_and(|exp| exp < chrono::Utc::now().timestamp()) {
+        return Err(tr("jeton expiré : lancer codex pour le rafraîchir", "token expired: run codex to refresh it").into());
     }
+    Ok((token.to_owned(), account.to_owned()))
+}
+
+/// Date d'expiration (secondes Unix) d'un jeton JWT : champ `exp` de sa partie centrale.
+fn jwt_exp(token: &str) -> Option<i64> {
+    let payload = base64url_decode(token.split('.').nth(1)?)?;
+    serde_json::from_slice::<Value>(&payload).ok()?["exp"].as_i64()
+}
+
+/// Décodage base64 « URL » (alphabet `-_`, sans remplissage obligatoire), celui des JWT.
+fn base64url_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let (mut buf, mut bits) = (0u32, 0);
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            b'=' => break,
+            _ => return None,
+        };
+        buf = (buf << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }
 
 fn fetch() -> Result<Usage, FetchError> {
@@ -785,6 +819,15 @@ mod tests {
         assert_eq!(u.limits[1].label, "Weekly");
         assert!(u.limits[1].resets_at.is_some());
         assert!(parse_codex(r#"{"rate_limit": null}"#).is_err());
+    }
+
+    #[test]
+    fn codex_token_expiry() {
+        // Partie centrale : {"exp":123} en base64 URL, sans remplissage.
+        assert_eq!(jwt_exp("en-tete.eyJleHAiOjEyM30.signature"), Some(123));
+        assert_eq!(jwt_exp("pas-un-jwt"), None);
+        assert_eq!(jwt_exp("a.!!!.b"), None);
+        assert_eq!(base64url_decode("-_8").unwrap(), [0xfb, 0xff]);
     }
 
     #[test]
