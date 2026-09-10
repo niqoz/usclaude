@@ -311,6 +311,20 @@ impl ksni::Tray for UsageTray {
         "Claude — usage".into()
     }
 
+    // Pas de zone de notification (bureau non compatible, ou panneau pas encore prêt à
+    // l'ouverture de session) : on patiente, ksni affiche l'icône dès qu'elle apparaît.
+    fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
+        eprintln!(
+            "usclaude : aucune zone de notification compatible StatusNotifierItem pour l'instant, \
+             l'icône apparaîtra dès qu'elle sera disponible."
+        );
+        true
+    }
+
+    fn watcher_online(&self) {
+        eprintln!("usclaude : zone de notification trouvée.");
+    }
+
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         let usage = self.state.as_ref().and_then(|s| s.as_ref().ok());
         vec![draw_icon(
@@ -446,9 +460,14 @@ fn main() {
     };
 
     let (tx, rx) = mpsc::channel();
-    let handle = UsageTray { state: None, refresh: tx, interval: load_interval() }
-        .spawn()
-        .expect("zone de notification indisponible");
+    let tray = UsageTray { state: None, refresh: tx, interval: load_interval() };
+    let handle = match tray.assume_sni_available(true).spawn() {
+        Ok(handle) => handle,
+        Err(e) => {
+            eprintln!("usclaude : impossible de créer l'icône : {e}");
+            std::process::exit(1);
+        }
+    };
 
     loop {
         let result = fetch();
