@@ -100,6 +100,7 @@ Fichiers utilisés :
 | --- | --- |
 | `~/.claude/.credentials.json` | Jeton de connexion, en lecture seule. |
 | `~/.config/usclaude/interval` | Intervalle choisi, en secondes. |
+| `~/.cache/usclaude/last.json` | Dernière réponse valide, réaffichée au démarrage. |
 | `~/.config/autostart/usclaude.desktop` | Démarrage automatique, si activé. |
 | `$XDG_RUNTIME_DIR/usclaude-$USER.lock` | Verrou d'instance unique. |
 
@@ -117,9 +118,14 @@ affiche l'usage une fois dans le terminal, ou l'erreur rencontrée.
   publics et peuvent changer sans préavis. Les limites inconnues sont affichées sous
   leur nom brut dès qu'elles dépassent 0 %.
 - **Rafraîchissement fréquent** : le service peut répondre « trop de requêtes »
-  (erreur 429). L'applet garde alors les dernières valeurs et double son attente à
-  chaque refus, jusqu'à 10 min, puis revient à l'intervalle choisi dès qu'une
-  réponse passe. Le menu indique l'heure du prochain essai.
+  (erreur 429). L'applet garde alors les dernières valeurs et attend le délai
+  indiqué par le service (en-tête `Retry-After`, jusqu'à 1 h). S'il n'en indique
+  pas, elle double son attente à chaque refus, jusqu'à 10 min. Elle revient à
+  l'intervalle choisi dès qu'une réponse passe ; le menu indique l'heure du
+  prochain essai.
+- **Au démarrage**, l'applet réaffiche aussitôt les derniers chiffres connus, avec
+  leur heure (« Mis à jour mer. 9 à 15:11 »), le temps que la première mesure
+  aboutisse. Une erreur survenue depuis s'affiche sur sa propre ligne du menu.
 - Interface en français uniquement.
 
 ## Tests

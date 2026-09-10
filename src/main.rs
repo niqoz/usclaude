@@ -15,9 +15,10 @@ const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// Intervalles de rafraîchissement proposés (secondes, libellé) ; le premier par défaut.
 const INTERVALS: [(u64, &str); 4] = [(90, "90 s"), (180, "3 min"), (300, "5 min"), (600, "10 min")];
 
-/// Réponse 429 du service : l'attente double à chaque refus, jusqu'à ce plafond (secondes).
-const RATE_LIMITED: &str = "trop de requêtes, nouvel essai plus tard";
+/// Réponse 429 du service : sans délai indiqué, l'attente double à chaque refus jusqu'à
+/// `MAX_BACKOFF` ; un délai `Retry-After` est respecté jusqu'à `MAX_RETRY_AFTER` (secondes).
 const MAX_BACKOFF: u64 = 600;
+const MAX_RETRY_AFTER: u64 = 3600;
 
 /// Limites connues, dans l'ordre d'affichage.
 const KNOWN: [(&str, &str); 4] = [
@@ -48,6 +49,28 @@ impl Usage {
 
 // ---------- Récupération ----------
 
+/// Le refus 429 est à part : il règle l'attente avant le prochain essai.
+enum FetchError {
+    /// « Trop de requêtes », avec le délai demandé par le service (`Retry-After`, secondes).
+    RateLimited(Option<u64>),
+    Other(String),
+}
+
+impl From<String> for FetchError {
+    fn from(e: String) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::RateLimited(_) => f.write_str("trop de requêtes, nouvel essai plus tard"),
+            Self::Other(e) => f.write_str(e),
+        }
+    }
+}
+
 fn credentials_path() -> String {
     let dir = std::env::var("CLAUDE_CONFIG_DIR")
         .unwrap_or_else(|_| format!("{}/.claude", home()));
@@ -72,29 +95,75 @@ fn read_token() -> Result<(String, Option<String>), String> {
     Ok((token.to_owned(), plan))
 }
 
-fn fetch() -> Result<Usage, String> {
+fn fetch() -> Result<Usage, FetchError> {
     let (token, plan) = read_token()?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
+        // Codes d'erreur traités à la main, pour lire l'en-tête Retry-After d'un 429.
+        .http_status_as_error(false)
         .build()
         .into();
-    let body = agent
+    let mut resp = agent
         .get(USAGE_URL)
         .header("Authorization", &format!("Bearer {token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("User-Agent", concat!("usclaude/", env!("CARGO_PKG_VERSION")))
         .call()
-        .map_err(|e| match e {
-            ureq::Error::StatusCode(401) => "jeton refusé : lancer claude pour le rafraîchir".into(),
-            ureq::Error::StatusCode(429) => RATE_LIMITED.into(),
-            e => format!("requête : {e}"),
-        })?
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| format!("réponse : {e}"))?;
+        .map_err(|e| format!("requête : {e}"))?;
+    match resp.status().as_u16() {
+        200..=299 => {}
+        401 => return Err("jeton refusé : lancer claude pour le rafraîchir".to_owned().into()),
+        429 => {
+            let header = resp.headers().get("retry-after").and_then(|v| v.to_str().ok());
+            return Err(FetchError::RateLimited(parse_retry_after(header)));
+        }
+        s => return Err(format!("réponse HTTP {s}").into()),
+    }
+    let body = resp.body_mut().read_to_string().map_err(|e| format!("réponse : {e}"))?;
     let mut usage = parse(&body)?;
     usage.plan = plan;
+    save_cache(&cache_json(&body, usage.plan.as_deref(), usage.fetched));
     Ok(usage)
+}
+
+/// `Retry-After` en secondes. La forme date HTTP, rare, est ignorée : l'attente double alors.
+fn parse_retry_after(header: Option<&str>) -> Option<u64> {
+    header?.trim().parse().ok()
+}
+
+// ---------- Cache de la dernière réponse ----------
+
+fn cache_path() -> String {
+    let cache = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{}/.cache", home()));
+    format!("{cache}/usclaude/last.json")
+}
+
+fn cache_json(body: &str, plan: Option<&str>, fetched: DateTime<Local>) -> String {
+    serde_json::json!({ "fetched": fetched.to_rfc3339(), "plan": plan, "body": body }).to_string()
+}
+
+/// Dernière réponse valide, réaffichée dès le démarrage avec son heure d'origine.
+fn parse_cache(text: &str) -> Option<Usage> {
+    let json: Value = serde_json::from_str(text).ok()?;
+    let mut usage = parse(json["body"].as_str()?).ok()?;
+    usage.fetched = DateTime::parse_from_rfc3339(json["fetched"].as_str()?).ok()?.with_timezone(&Local);
+    usage.plan = json["plan"].as_str().map(str::to_owned);
+    Some(usage)
+}
+
+fn load_cache() -> Option<Usage> {
+    parse_cache(&std::fs::read_to_string(cache_path()).ok()?)
+}
+
+fn save_cache(json: &str) {
+    let path = cache_path();
+    let written = std::path::Path::new(&path)
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&path, json));
+    if let Err(e) = written {
+        eprintln!("usclaude : cache non enregistré : {e}");
+    }
 }
 
 /// Garde toutes les entrées de la forme `{"utilization": n, "resets_at": …}`,
@@ -227,10 +296,14 @@ fn restart() {
     }
 }
 
-/// Attente après un nouveau refus 429 : le double de la précédente (ou de l'intervalle
-/// choisi au premier refus), plafonnée à `MAX_BACKOFF`.
-fn next_backoff(current: Option<u64>, interval: u64) -> u64 {
-    (current.unwrap_or(interval) * 2).min(MAX_BACKOFF.max(interval))
+/// Attente après un nouveau refus 429. Le délai `Retry-After` du service s'il y en a un
+/// (jamais sous l'intervalle choisi, au plus `MAX_RETRY_AFTER`) ; sinon le double de
+/// l'attente précédente (ou de l'intervalle au premier refus), plafonné à `MAX_BACKOFF`.
+fn next_backoff(current: Option<u64>, interval: u64, retry_after: Option<u64>) -> u64 {
+    match retry_after {
+        Some(s) => s.clamp(interval, MAX_RETRY_AFTER),
+        None => (current.unwrap_or(interval) * 2).min(MAX_BACKOFF.max(interval)),
+    }
 }
 
 // ---------- Mise en forme ----------
@@ -310,6 +383,8 @@ struct UsageTray {
     interval: u64,
     /// Prochain essai quand le service refuse (429) : l'attente est alors allongée.
     next_retry: Option<DateTime<Local>>,
+    /// Dernière erreur quand des valeurs antérieures restent affichées.
+    last_error: Option<String>,
 }
 
 impl ksni::Tray for UsageTray {
@@ -373,11 +448,13 @@ impl ksni::Tray for UsageTray {
                 }
                 items.extend(u.limits.iter().map(|l| info(fmt_limit(l, now))));
                 items.push(MenuItem::Separator);
-                items.push(info(format!("Mis à jour à {}", u.fetched.format("%H:%M"))));
+                items.push(info(format!("Mis à jour {}", fmt_reset(u.fetched, now))));
             }
         }
         if let Some(t) = self.next_retry {
             items.push(info(format!("Service saturé : nouvel essai à {}", t.format("%H:%M"))));
+        } else if let Some(e) = &self.last_error {
+            items.push(info(format!("Erreur : {e}")));
         }
         items.push(MenuItem::Separator);
         items.push(
@@ -475,7 +552,13 @@ fn main() {
     };
 
     let (tx, rx) = mpsc::channel();
-    let tray = UsageTray { state: None, refresh: tx, interval: load_interval(), next_retry: None };
+    let tray = UsageTray {
+        state: load_cache().map(Ok),
+        refresh: tx,
+        interval: load_interval(),
+        next_retry: None,
+        last_error: None,
+    };
     let handle = match tray.assume_sni_available(true).spawn() {
         Ok(handle) => handle,
         Err(e) => {
@@ -489,17 +572,25 @@ fn main() {
         let result = fetch();
         let interval = handle.update(|t| t.interval).unwrap_or(INTERVALS[0].0);
         backoff = match &result {
-            Err(e) if e == RATE_LIMITED => Some(next_backoff(backoff, interval)),
+            Err(FetchError::RateLimited(after)) => Some(next_backoff(backoff, interval, *after)),
             _ => None,
         };
         let secs = backoff.unwrap_or(interval);
 
         handle.update(|t| {
             t.next_retry = backoff.map(|s| Local::now() + Duration::from_secs(s));
-            // Une erreur passagère (réseau, 429) ne doit pas effacer les dernières valeurs.
-            match (&t.state, result) {
-                (Some(Ok(_)), Err(e)) => eprintln!("usclaude : {e}"),
-                (_, r) => t.state = Some(r),
+            match result {
+                Ok(u) => {
+                    t.state = Some(Ok(u));
+                    t.last_error = None;
+                }
+                // Une erreur (réseau, 429, jeton) n'efface pas les dernières valeurs : elle
+                // s'affiche en plus, sur sa propre ligne du menu.
+                Err(e) if matches!(t.state, Some(Ok(_))) => {
+                    eprintln!("usclaude : {e}");
+                    t.last_error = Some(e.to_string());
+                }
+                Err(e) => t.state = Some(Err(e.to_string())),
             }
         });
         // Attend l'échéance, un clic sur « Actualiser » ou un changement de réglage.
@@ -563,11 +654,32 @@ mod tests {
 
     #[test]
     fn backoff_doubles_up_to_cap() {
-        assert_eq!(next_backoff(None, 90), 180);
-        assert_eq!(next_backoff(Some(180), 90), 360);
-        assert_eq!(next_backoff(Some(360), 90), 600, "plafond de 10 min");
-        assert_eq!(next_backoff(Some(600), 90), 600);
-        assert_eq!(next_backoff(None, 600), 600, "jamais plus court que l'intervalle choisi");
+        assert_eq!(next_backoff(None, 90, None), 180);
+        assert_eq!(next_backoff(Some(180), 90, None), 360);
+        assert_eq!(next_backoff(Some(360), 90, None), 600, "plafond de 10 min");
+        assert_eq!(next_backoff(Some(600), 90, None), 600);
+        assert_eq!(next_backoff(None, 600, None), 600, "jamais plus court que l'intervalle choisi");
+    }
+
+    #[test]
+    fn backoff_follows_retry_after() {
+        assert_eq!(next_backoff(Some(600), 90, Some(120)), 120, "délai du service prioritaire");
+        assert_eq!(next_backoff(None, 90, Some(10)), 90, "jamais sous l'intervalle choisi");
+        assert_eq!(next_backoff(None, 90, Some(99_999)), 3600, "plafond d'une heure");
+        assert_eq!(parse_retry_after(Some(" 120 ")), Some(120));
+        assert_eq!(parse_retry_after(Some("Wed, 21 Oct 2015 07:28:00 GMT")), None);
+        assert_eq!(parse_retry_after(None), None);
+    }
+
+    #[test]
+    fn cache_round_trip() {
+        let fetched: DateTime<Local> = DateTime::parse_from_rfc3339("2026-09-09T15:11:00+02:00").unwrap().into();
+        let u = parse_cache(&cache_json(SAMPLE, Some("max"), fetched)).unwrap();
+        assert_eq!(u.fetched, fetched, "heure d'origine conservée");
+        assert_eq!(u.plan.as_deref(), Some("max"));
+        assert_eq!(u.pct("seven_day"), Some(62.5));
+        assert!(parse_cache("{}").is_none());
+        assert!(parse_cache("pas du json").is_none());
     }
 
     #[test]
