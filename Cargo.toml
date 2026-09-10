@@ -2,7 +2,13 @@
 name = "usclaude"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
 description = "Icône de zone de notification affichant les limites d'usage de Claude Code (/usage)"
+license = "MIT"
+repository = "https://github.com/niqoz/usclaude"
+readme = "README.md"
+keywords = ["claude", "tray", "systray", "usage", "linux"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 chrono = "0.4.45"
