@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=usclaude
+GenericName=Usage Claude Code
+Comment=Limites d'usage de Claude Code dans la zone de notification
+Exec=usclaude
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;
+StartupNotify=false

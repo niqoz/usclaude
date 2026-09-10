@@ -42,9 +42,29 @@ redémarrage du panneau.
 
 ## Installation
 
+Depuis la [dernière version publiée](https://github.com/niqoz/usclaude/releases/latest).
+
+**Debian, Ubuntu, Linux Mint** :
+
+```sh
+sudo apt install ./usclaude_0.1.0_amd64.deb
+```
+
+L'applet s'ajoute au menu, dans **Accessoires**, et se lance aussi en tapant
+`usclaude`.
+
+**Autres distributions** (x86_64) : binaire statique, sans aucune dépendance.
+
+```sh
+tar xzf usclaude-0.1.0-x86_64-linux.tar.gz
+install -m 755 usclaude-0.1.0-x86_64-linux/usclaude ~/.local/bin/
+usclaude &
+```
+
+**Depuis les sources** (Rust 1.89 ou plus récent) :
+
 ```sh
 cargo install --git https://github.com/niqoz/usclaude
-usclaude &
 ```
 
 Pour qu'elle démarre avec la session, cocher **Lancer à l'ouverture de session**
@@ -106,3 +126,14 @@ affiche l'usage une fois dans le terminal, ou l'erreur rencontrée.
 cargo test
 cargo clippy --all-targets
 ```
+
+## Fichiers de release
+
+```sh
+./packaging/build-release.sh
+```
+
+produit dans `target/dist/` l'archive `.tar.gz` et le paquet `.deb`, tous deux avec
+un binaire statique (musl). Prérequis : la cible
+`rustup target add x86_64-unknown-linux-musl`, et les paquets `musl-tools`,
+`dpkg-dev` et `fakeroot`.
