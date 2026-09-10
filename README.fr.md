@@ -126,6 +126,9 @@ documenté. Cette instance a ses propres réglages, cache, verrou et démarrage
 automatique, sous le nom `usclaude-codex`. `usclaude --codex --print` fonctionne
 aussi.
 
+Le paquet `.deb` ajoute au menu une seconde entrée, **usclaude (Codex)**, à côté de
+l'entrée Claude.
+
 ## Diagnostic
 
 ```sh

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=usclaude (Codex)
+GenericName=Codex usage
+GenericName[fr]=Usage Codex
+Comment=Codex usage limits in the system tray
+Comment[fr]=Limites d'usage de Codex dans la zone de notification
+Exec=usclaude --codex
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;
+StartupNotify=false

@@ -123,6 +123,9 @@ the service queried is `https://chatgpt.com/backend-api/wham/usage`, also
 undocumented. This instance has its own settings, cache, lock and autostart entry,
 under the name `usclaude-codex`. `usclaude --codex --print` works too.
 
+The `.deb` package adds a second menu entry, **usclaude (Codex)**, next to the
+Claude one.
+
 ## Troubleshooting
 
 ```sh
