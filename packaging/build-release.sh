@@ -37,7 +37,7 @@ mkdir -p "$DIST"
 TAR_NAME="usclaude-${VERSION}-x86_64-linux"
 install -d "$DIST/$TAR_NAME"
 install -m 755 "$BIN" "$DIST/$TAR_NAME/usclaude"
-install -m 644 README.md LICENSE "$DIST/$TAR_NAME/"
+install -m 644 README.md README.fr.md LICENSE "$DIST/$TAR_NAME/"
 tar -C "$DIST" --owner=0 --group=0 -czf "$DIST/$TAR_NAME.tar.gz" "$TAR_NAME"
 rm -rf "${DIST:?}/$TAR_NAME"
 
@@ -50,7 +50,7 @@ install -d "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/applications" \
 install -m 755 "$BIN" "$ROOT/usr/bin/usclaude"
 install -m 644 packaging/usclaude.desktop "$ROOT/usr/share/applications/usclaude.desktop"
 install -m 644 LICENSE "$ROOT/usr/share/doc/usclaude/copyright"
-install -m 644 README.md "$ROOT/usr/share/doc/usclaude/README.md"
+install -m 644 README.md README.fr.md "$ROOT/usr/share/doc/usclaude/"
 printf 'usclaude (%s) unstable; urgency=low\n\n  * Paquet construit depuis les sources.\n\n -- niqoz <niqoz@users.noreply.github.com>  %s\n' \
     "$VERSION" "$(date -R)" | gzip -9n > "$ROOT/usr/share/doc/usclaude/changelog.Debian.gz"
 chmod 644 "$ROOT/usr/share/doc/usclaude/changelog.Debian.gz"

@@ -1,59 +1,62 @@
 # usclaude
 
-Petite applet Linux qui affiche dans la zone de notification les limites d'usage de
-[Claude Code](https://claude.com/claude-code), les mêmes que la commande `/usage` :
-session de 5 heures et limites hebdomadaires, avec l'heure de remise à zéro.
+*[Version française](README.fr.md)*
 
-L'icône montre deux jauges, **session** à gauche et **semaine** à droite, vertes sous
-50 %, orange sous 80 %, rouges au-delà. Le détail s'affiche au survol et dans le menu.
+A small Linux applet that shows your [Claude Code](https://claude.com/claude-code)
+usage limits in the system tray — the same figures as the `/usage` command: the
+5-hour session and the weekly limits, with their reset times.
 
-Écrit en Rust avec [ksni](https://github.com/iovxw/ksni) (protocole
-StatusNotifierItem, sans GTK). Le binaire ne dépend que de la libc.
+![usclaude in the XFCE panel, menu open](assets/screenshot.png)
 
-> Projet indépendant, non affilié à Anthropic.
+The icon shows two gauges, **session** on the left and **week** on the right: green
+below 50 %, orange below 80 %, red above. Details appear on hover and in the menu.
 
-## Prérequis
+Written in Rust with [ksni](https://github.com/iovxw/ksni) (StatusNotifierItem
+protocol, no GTK). A single static binary with no dependencies.
 
-- **Claude Code connecté avec un compte claude.ai** (Pro ou Max), c'est-à-dire via
-  `/login`. Une clé d'API n'a pas de limites `/usage` à afficher.
-- **Un panneau compatible StatusNotifierItem**, le protocole standard des icônes de
-  notification. X11 ou Wayland ne change rien.
+> Independent project, not affiliated with Anthropic. The interface is in French.
 
-## Compatibilité
+## Requirements
 
-| Bureau | Prise en charge |
+- **Claude Code signed in with a claude.ai account** (Pro or Max), i.e. via
+  `/login`. An API key has no `/usage` limits to show.
+- **A panel that supports StatusNotifierItem**, the standard tray icon protocol.
+  X11 or Wayland makes no difference.
+
+## Compatibility
+
+| Desktop | Support |
 | --- | --- |
 | KDE Plasma | ✅ native |
-| XFCE 4.16 et plus récent | ✅ greffon *Zone de notification* (testé sur XFCE 4.20) |
+| XFCE 4.16 and later | ✅ *Status Tray* plugin (tested on XFCE 4.20) |
 | LXQt, Cinnamon | ✅ native |
-| GNOME sous Ubuntu | ✅ extension AppIndicator installée d'office |
-| GNOME ailleurs (Debian, Fedora…) | ⚠️ installer l'extension *AppIndicator and KStatusNotifierItem Support* |
-| MATE, Budgie | ⚠️ selon la version et l'applet de notification utilisée |
-| Sway, Hyprland… avec waybar | ✅ si le module `tray` est activé |
-| i3bar, polybar, LXDE | ❌ ne gèrent que l'ancien protocole XEmbed |
+| GNOME on Ubuntu | ✅ AppIndicator extension installed by default |
+| GNOME elsewhere (Debian, Fedora…) | ⚠️ install the *AppIndicator and KStatusNotifierItem Support* extension |
+| MATE, Budgie | ⚠️ depends on the version and the tray applet in use |
+| Sway, Hyprland… with waybar | ✅ if the `tray` module is enabled |
+| i3bar, polybar, LXDE | ❌ only support the older XEmbed protocol |
 
-Seul XFCE 4.20 a été testé ; le reste s'appuie sur la prise en charge annoncée par
-chaque bureau.
+Only XFCE 4.20 has been tested; the rest relies on each desktop's advertised
+support.
 
-Sans zone de notification compatible, l'applet ne s'arrête pas : elle l'indique dans
-le terminal et patiente. L'icône apparaît dès que le panneau est prêt, ce qui couvre
-aussi le démarrage de session, quand l'applet se lance avant le panneau, et le
-redémarrage du panneau.
+Without a compatible tray, the applet does not quit: it says so in the terminal and
+waits. The icon appears as soon as the panel is ready, which also covers session
+startup (when the applet starts before the panel) and panel restarts.
 
 ## Installation
 
-Depuis la [dernière version publiée](https://github.com/niqoz/usclaude/releases/latest).
+From the [latest release](https://github.com/niqoz/usclaude/releases/latest).
 
-**Debian, Ubuntu, Linux Mint** :
+**Debian, Ubuntu, Linux Mint**:
 
 ```sh
 sudo apt install ./usclaude_0.1.2_amd64.deb
 ```
 
-L'applet s'ajoute au menu, dans **Accessoires**, et se lance aussi en tapant
-`usclaude`.
+The applet is added to the menu under **Accessories** and can also be started by
+typing `usclaude`.
 
-**Autres distributions** (x86_64) : binaire statique, sans aucune dépendance.
+**Other distributions** (x86_64): static binary, no dependencies at all.
 
 ```sh
 tar xzf usclaude-0.1.2-x86_64-linux.tar.gz
@@ -61,72 +64,71 @@ install -m 755 usclaude-0.1.2-x86_64-linux/usclaude ~/.local/bin/
 usclaude &
 ```
 
-**Depuis les sources** (Rust 1.89 ou plus récent) :
+**From source** (Rust 1.89 or later):
 
 ```sh
 cargo install --git https://github.com/niqoz/usclaude
 ```
 
-Pour qu'elle démarre avec la session, cocher **Lancer à l'ouverture de session**
-dans son menu.
+To start it with your session, tick **Lancer à l'ouverture de session** (*start
+at login*) in its menu.
 
 ## Menu
 
-| Entrée | Rôle |
+| Entry | Meaning |
 | --- | --- |
-| Limites | Pourcentage utilisé et heure de remise à zéro de chaque limite. |
-| Actualiser | Nouvelle mesure immédiate. |
-| Réglages | Intervalle de rafraîchissement : 90 s, 3 min, 5 min ou 10 min. |
-| Lancer à l'ouverture de session | Crée ou supprime l'entrée de démarrage automatique. |
-| Redémarrer | Relance l'applet, par exemple après une mise à jour du binaire. |
-| Quitter | Arrête l'applet. |
+| Limits | Percentage used and reset time of each limit. |
+| Actualiser | Refresh now. |
+| Réglages | Refresh interval: 90 s, 3 min, 5 min or 10 min. |
+| Lancer à l'ouverture de session | Creates or removes the autostart entry. |
+| Redémarrer | Restarts the applet, e.g. after updating the binary. |
+| Quitter | Quits. |
 
-Une seule instance tourne à la fois : un second lancement s'arrête aussitôt.
+Only one instance runs at a time: a second launch exits immediately.
 
-## Fonctionnement
+## How it works
 
-L'applet interroge le même service que `/usage`
-(`https://api.anthropic.com/api/oauth/usage`) avec le jeton de connexion de Claude
-Code, lu dans `~/.claude/.credentials.json` (ou `$CLAUDE_CONFIG_DIR`).
+The applet queries the same service as `/usage`
+(`https://api.anthropic.com/api/oauth/usage`) with Claude Code's sign-in token,
+read from `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`).
 
-Ce jeton est **lu, jamais modifié** : l'applet ne le rafraîchit pas elle-même, car
-cela invaliderait la session de Claude Code. Quand il expire, l'applet affiche
-« jeton expiré » jusqu'à la prochaine utilisation de `claude`, qui le renouvelle.
-Aucune autre donnée n'est envoyée ni conservée.
+The token is **read, never modified**: the applet does not refresh it itself, as
+that would invalidate Claude Code's session. When it expires, the applet shows
+"jeton expiré" (*token expired*) until the next use of `claude`, which renews it.
+No other data is sent anywhere.
 
-Fichiers utilisés :
+Files used:
 
-| Fichier | Usage |
+| File | Purpose |
 | --- | --- |
-| `~/.claude/.credentials.json` | Jeton de connexion, en lecture seule. |
-| `~/.config/usclaude/interval` | Intervalle choisi, en secondes. |
-| `~/.cache/usclaude/last.json` | Dernière réponse valide, réaffichée au démarrage. |
-| `~/.config/autostart/usclaude.desktop` | Démarrage automatique, si activé. |
-| `$XDG_RUNTIME_DIR/usclaude-$USER.lock` | Verrou d'instance unique. |
+| `~/.claude/.credentials.json` | Sign-in token, read-only. |
+| `~/.config/usclaude/interval` | Chosen interval, in seconds. |
+| `~/.cache/usclaude/last.json` | Last valid response, shown again at startup. |
+| `~/.config/autostart/usclaude.desktop` | Autostart, if enabled. |
+| `$XDG_RUNTIME_DIR/usclaude-$USER.lock` | Single-instance lock. |
 
-## Diagnostic
+## Troubleshooting
 
 ```sh
 usclaude --print
 ```
 
-affiche l'usage une fois dans le terminal, ou l'erreur rencontrée.
+prints the usage once in the terminal, or the error encountered.
 
-## Limites connues
+## Known limitations
 
-- **Service non documenté** : l'adresse et le format de la réponse ne sont pas
-  publics et peuvent changer sans préavis. Les limites inconnues sont affichées sous
-  leur nom brut dès qu'elles dépassent 0 %.
-- **Rafraîchissement fréquent** : le service peut répondre « trop de requêtes »
-  (erreur 429). L'applet garde alors les dernières valeurs et attend le délai
-  indiqué par le service (en-tête `Retry-After`, jusqu'à 1 h). S'il n'en indique
-  pas, elle double son attente à chaque refus, jusqu'à 10 min. Elle revient à
-  l'intervalle choisi dès qu'une réponse passe ; le menu indique l'heure du
-  prochain essai.
-- **Au démarrage**, l'applet réaffiche aussitôt les derniers chiffres connus, avec
-  leur heure (« Mis à jour mer. 9 à 15:11 »), le temps que la première mesure
-  aboutisse. Une erreur survenue depuis s'affiche sur sa propre ligne du menu.
-- Interface en français uniquement.
+- **Undocumented service**: the address and response format are not public and
+  may change without notice. Unknown limits are shown under their raw name as soon
+  as they go above 0 %.
+- **Frequent refresh**: the service may answer "too many requests" (HTTP 429).
+  The applet then keeps the last values and waits for the delay given by the
+  service (`Retry-After` header, up to 1 h). Without one, it doubles its wait on
+  each refusal, up to 10 min. It returns to the chosen interval as soon as a
+  request succeeds; the menu shows the time of the next attempt.
+- **At startup**, the applet immediately shows the last known figures with their
+  time ("Mis à jour mer. 9 à 15:11"), until the first request succeeds. An error
+  that occurred since is shown on its own menu line.
+- French interface only.
 
 ## Tests
 
@@ -135,13 +137,16 @@ cargo test
 cargo clippy --all-targets
 ```
 
-## Fichiers de release
+## Building releases
 
 ```sh
 ./packaging/build-release.sh
 ```
 
-produit dans `target/dist/` l'archive `.tar.gz` et le paquet `.deb`, tous deux avec
-un binaire statique (musl). Prérequis : la cible
-`rustup target add x86_64-unknown-linux-musl`, et les paquets `musl-tools`,
-`dpkg-dev` et `fakeroot`.
+builds the `.tar.gz` archive and the `.deb` package in `target/dist/`, both with a
+static (musl) binary. Requires the `rustup target add x86_64-unknown-linux-musl`
+target and the `musl-tools`, `dpkg-dev` and `fakeroot` packages.
+
+## License
+
+MIT
