@@ -51,7 +51,7 @@ Depuis la [dernière version publiée](https://github.com/niqoz/usclaude/release
 **Debian, Ubuntu, Linux Mint** :
 
 ```sh
-sudo apt install ./usclaude_0.1.2_amd64.deb
+sudo apt install ./usclaude_0.1.3_amd64.deb
 ```
 
 L'applet s'ajoute au menu, dans **Accessoires**, et se lance aussi en tapant
@@ -60,8 +60,8 @@ L'applet s'ajoute au menu, dans **Accessoires**, et se lance aussi en tapant
 **Autres distributions** (x86_64) : binaire statique, sans aucune dépendance.
 
 ```sh
-tar xzf usclaude-0.1.2-x86_64-linux.tar.gz
-install -m 755 usclaude-0.1.2-x86_64-linux/usclaude ~/.local/bin/
+tar xzf usclaude-0.1.3-x86_64-linux.tar.gz
+install -m 755 usclaude-0.1.3-x86_64-linux/usclaude ~/.local/bin/
 usclaude &
 ```
 
