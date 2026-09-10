@@ -15,6 +15,10 @@ const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// Intervalles de rafraîchissement proposés (secondes, libellé) ; le premier par défaut.
 const INTERVALS: [(u64, &str); 4] = [(90, "90 s"), (180, "3 min"), (300, "5 min"), (600, "10 min")];
 
+/// Réponse 429 du service : l'attente double à chaque refus, jusqu'à ce plafond (secondes).
+const RATE_LIMITED: &str = "trop de requêtes, nouvel essai plus tard";
+const MAX_BACKOFF: u64 = 600;
+
 /// Limites connues, dans l'ordre d'affichage.
 const KNOWN: [(&str, &str); 4] = [
     ("five_hour", "Session (5 h)"),
@@ -82,7 +86,7 @@ fn fetch() -> Result<Usage, String> {
         .call()
         .map_err(|e| match e {
             ureq::Error::StatusCode(401) => "jeton refusé : lancer claude pour le rafraîchir".into(),
-            ureq::Error::StatusCode(429) => "trop de requêtes, nouvel essai plus tard".into(),
+            ureq::Error::StatusCode(429) => RATE_LIMITED.into(),
             e => format!("requête : {e}"),
         })?
         .body_mut()
@@ -223,6 +227,12 @@ fn restart() {
     }
 }
 
+/// Attente après un nouveau refus 429 : le double de la précédente (ou de l'intervalle
+/// choisi au premier refus), plafonnée à `MAX_BACKOFF`.
+fn next_backoff(current: Option<u64>, interval: u64) -> u64 {
+    (current.unwrap_or(interval) * 2).min(MAX_BACKOFF.max(interval))
+}
+
 // ---------- Mise en forme ----------
 
 fn fmt_reset(t: DateTime<Local>, now: DateTime<Local>) -> String {
@@ -298,6 +308,8 @@ struct UsageTray {
     state: Option<Result<Usage, String>>,
     refresh: Sender<()>,
     interval: u64,
+    /// Prochain essai quand le service refuse (429) : l'attente est alors allongée.
+    next_retry: Option<DateTime<Local>>,
 }
 
 impl ksni::Tray for UsageTray {
@@ -363,6 +375,9 @@ impl ksni::Tray for UsageTray {
                 items.push(MenuItem::Separator);
                 items.push(info(format!("Mis à jour à {}", u.fetched.format("%H:%M"))));
             }
+        }
+        if let Some(t) = self.next_retry {
+            items.push(info(format!("Service saturé : nouvel essai à {}", t.format("%H:%M"))));
         }
         items.push(MenuItem::Separator);
         items.push(
@@ -460,7 +475,7 @@ fn main() {
     };
 
     let (tx, rx) = mpsc::channel();
-    let tray = UsageTray { state: None, refresh: tx, interval: load_interval() };
+    let tray = UsageTray { state: None, refresh: tx, interval: load_interval(), next_retry: None };
     let handle = match tray.assume_sni_available(true).spawn() {
         Ok(handle) => handle,
         Err(e) => {
@@ -469,15 +484,25 @@ fn main() {
         }
     };
 
+    let mut backoff = None;
     loop {
         let result = fetch();
-        // Une erreur passagère (réseau, 429) ne doit pas effacer les dernières valeurs.
-        handle.update(|t| match (&t.state, result) {
-            (Some(Ok(_)), Err(e)) => eprintln!("usclaude : {e}"),
-            (_, r) => t.state = Some(r),
+        let interval = handle.update(|t| t.interval).unwrap_or(INTERVALS[0].0);
+        backoff = match &result {
+            Err(e) if e == RATE_LIMITED => Some(next_backoff(backoff, interval)),
+            _ => None,
+        };
+        let secs = backoff.unwrap_or(interval);
+
+        handle.update(|t| {
+            t.next_retry = backoff.map(|s| Local::now() + Duration::from_secs(s));
+            // Une erreur passagère (réseau, 429) ne doit pas effacer les dernières valeurs.
+            match (&t.state, result) {
+                (Some(Ok(_)), Err(e)) => eprintln!("usclaude : {e}"),
+                (_, r) => t.state = Some(r),
+            }
         });
         // Attend l'échéance, un clic sur « Actualiser » ou un changement de réglage.
-        let secs = handle.update(|t| t.interval).unwrap_or(INTERVALS[0].0);
         let _ = rx.recv_timeout(Duration::from_secs(secs));
     }
 }
@@ -534,6 +559,15 @@ mod tests {
         assert_eq!(parse_interval(""), 90);
         assert_eq!(parse_interval("42"), 90, "valeur hors liste refusée");
         assert_eq!(parse_interval("abc"), 90);
+    }
+
+    #[test]
+    fn backoff_doubles_up_to_cap() {
+        assert_eq!(next_backoff(None, 90), 180);
+        assert_eq!(next_backoff(Some(180), 90), 360);
+        assert_eq!(next_backoff(Some(360), 90), 600, "plafond de 10 min");
+        assert_eq!(next_backoff(Some(600), 90), 600);
+        assert_eq!(next_backoff(None, 600), 600, "jamais plus court que l'intervalle choisi");
     }
 
     #[test]

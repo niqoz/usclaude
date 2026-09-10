@@ -116,8 +116,10 @@ affiche l'usage une fois dans le terminal, ou l'erreur rencontrée.
 - **Service non documenté** : l'adresse et le format de la réponse ne sont pas
   publics et peuvent changer sans préavis. Les limites inconnues sont affichées sous
   leur nom brut dès qu'elles dépassent 0 %.
-- **Rafraîchissement fréquent** : le service peut répondre « trop de requêtes ».
-  L'applet garde alors les dernières valeurs et retente au cycle suivant.
+- **Rafraîchissement fréquent** : le service peut répondre « trop de requêtes »
+  (erreur 429). L'applet garde alors les dernières valeurs et double son attente à
+  chaque refus, jusqu'à 10 min, puis revient à l'intervalle choisi dès qu'une
+  réponse passe. Le menu indique l'heure du prochain essai.
 - Interface en français uniquement.
 
 ## Tests
