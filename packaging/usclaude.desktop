@@ -1,8 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=usclaude
-GenericName=Usage Claude Code
-Comment=Limites d'usage de Claude Code dans la zone de notification
+GenericName=Claude Code usage
+GenericName[fr]=Usage Claude Code
+Comment=Claude Code usage limits in the system tray
+Comment[fr]=Limites d'usage de Claude Code dans la zone de notification
 Exec=usclaude
 Icon=utilities-system-monitor
 Terminal=false

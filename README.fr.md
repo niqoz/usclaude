@@ -130,7 +130,8 @@ affiche l'usage une fois dans le terminal, ou l'erreur rencontrée.
 - **Au démarrage**, l'applet réaffiche aussitôt les derniers chiffres connus, avec
   leur heure (« Mis à jour mer. 9 à 15:11 »), le temps que la première mesure
   aboutisse. Une erreur survenue depuis s'affiche sur sa propre ligne du menu.
-- Interface en français uniquement.
+- **Langue** : français si la langue du système l'est (`LANG=fr_…`), anglais sinon.
+  Pour forcer l'anglais : `LANG=en_US.UTF-8 usclaude`.
 
 ## Tests
 

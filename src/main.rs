@@ -4,6 +4,7 @@
 //! Le jeton OAuth est lu (jamais modifié) dans `~/.claude/.credentials.json`.
 //! Quand il expire, c'est Claude Code qui le rafraîchit à sa prochaine utilisation.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::time::Duration;
 
@@ -20,13 +21,33 @@ const INTERVALS: [(u64, &str); 4] = [(90, "90 s"), (180, "3 min"), (300, "5 min"
 const MAX_BACKOFF: u64 = 600;
 const MAX_RETRY_AFTER: u64 = 3600;
 
-/// Limites connues, dans l'ordre d'affichage.
-const KNOWN: [(&str, &str); 4] = [
-    ("five_hour", "Session (5 h)"),
-    ("seven_day", "Semaine, tous modèles"),
-    ("seven_day_opus", "Semaine, Opus"),
-    ("seven_day_sonnet", "Semaine, Sonnet"),
+/// Limites connues, dans l'ordre d'affichage : (clé, libellé français, libellé anglais).
+const KNOWN: [(&str, &str, &str); 4] = [
+    ("five_hour", "Session (5 h)", "Session (5h)"),
+    ("seven_day", "Semaine, tous modèles", "Weekly, all models"),
+    ("seven_day_opus", "Semaine, Opus", "Weekly, Opus"),
+    ("seven_day_sonnet", "Semaine, Sonnet", "Weekly, Sonnet"),
 ];
+
+// ---------- Langue ----------
+
+/// Interface en français si la locale l'est, en anglais sinon. Fixée au démarrage.
+static FRENCH: AtomicBool = AtomicBool::new(false);
+
+fn french() -> bool {
+    FRENCH.load(Ordering::Relaxed)
+}
+
+/// Texte dans la langue de l'interface.
+fn tr(fr: &'static str, en: &'static str) -> &'static str {
+    if french() { fr } else { en }
+}
+
+/// Français si la première variable renseignée parmi LANGUAGE, LC_ALL, LC_MESSAGES et
+/// LANG (dans cet ordre) commence par « fr ».
+fn locale_is_french(values: &[Option<String>]) -> bool {
+    values.iter().flatten().find(|v| !v.is_empty()).is_some_and(|v| v.starts_with("fr"))
+}
 
 struct Limit {
     key: String,
@@ -65,7 +86,9 @@ impl From<String> for FetchError {
 impl std::fmt::Display for FetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Self::RateLimited(_) => f.write_str("trop de requêtes, nouvel essai plus tard"),
+            Self::RateLimited(_) => {
+                f.write_str(tr("trop de requêtes, nouvel essai plus tard", "too many requests, will retry later"))
+            }
             Self::Other(e) => f.write_str(e),
         }
     }
@@ -80,16 +103,19 @@ fn credentials_path() -> String {
 /// Renvoie (jeton, type d'abonnement).
 fn read_token() -> Result<(String, Option<String>), String> {
     let path = credentials_path();
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path} : {e}"))?;
-    let json: Value = serde_json::from_str(&text).map_err(|e| format!("{path} : {e}"))?;
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
+    let json: Value = serde_json::from_str(&text).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
     let oauth = &json["claudeAiOauth"];
     let token = oauth["accessToken"]
         .as_str()
-        .ok_or("pas de connexion claude.ai (lancer claude puis /login)")?;
+        .ok_or(tr(
+            "pas de connexion claude.ai (lancer claude puis /login)",
+            "not signed in to claude.ai (run claude, then /login)",
+        ))?;
     if let Some(exp) = oauth["expiresAt"].as_i64()
         && exp < chrono::Utc::now().timestamp_millis()
     {
-        return Err("jeton expiré : lancer claude pour le rafraîchir".into());
+        return Err(tr("jeton expiré : lancer claude pour le rafraîchir", "token expired: run claude to refresh it").into());
     }
     let plan = oauth["subscriptionType"].as_str().map(str::to_owned);
     Ok((token.to_owned(), plan))
@@ -109,17 +135,20 @@ fn fetch() -> Result<Usage, FetchError> {
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("User-Agent", concat!("usclaude/", env!("CARGO_PKG_VERSION")))
         .call()
-        .map_err(|e| format!("requête : {e}"))?;
+        .map_err(|e| format!("{}{e}", tr("requête : ", "request: ")))?;
     match resp.status().as_u16() {
         200..=299 => {}
-        401 => return Err("jeton refusé : lancer claude pour le rafraîchir".to_owned().into()),
+        401 => {
+            let msg = tr("jeton refusé : lancer claude pour le rafraîchir", "token rejected: run claude to refresh it");
+            return Err(msg.to_owned().into());
+        }
         429 => {
             let header = resp.headers().get("retry-after").and_then(|v| v.to_str().ok());
             return Err(FetchError::RateLimited(parse_retry_after(header)));
         }
-        s => return Err(format!("réponse HTTP {s}").into()),
+        s => return Err(format!("{} {s}", tr("réponse HTTP", "HTTP response")).into()),
     }
-    let body = resp.body_mut().read_to_string().map_err(|e| format!("réponse : {e}"))?;
+    let body = resp.body_mut().read_to_string().map_err(|e| format!("{}{e}", tr("réponse : ", "response: ")))?;
     let mut usage = parse(&body)?;
     usage.plan = plan;
     save_cache(&cache_json(&body, usage.plan.as_deref(), usage.fetched));
@@ -162,30 +191,31 @@ fn save_cache(json: &str) {
         .map_or(Ok(()), std::fs::create_dir_all)
         .and_then(|()| std::fs::write(&path, json));
     if let Err(e) = written {
-        eprintln!("usclaude : cache non enregistré : {e}");
+        eprintln!("usclaude: {}{e}", tr("cache non enregistré : ", "cache not saved: "));
     }
 }
 
 /// Garde toutes les entrées de la forme `{"utilization": n, "resets_at": …}`,
 /// connues d'abord, puis les éventuelles nouvelles sous leur nom brut.
 fn parse(body: &str) -> Result<Usage, String> {
-    let json: Value = serde_json::from_str(body).map_err(|e| format!("réponse illisible : {e}"))?;
-    let obj = json.as_object().ok_or("réponse inattendue")?;
+    let json: Value =
+        serde_json::from_str(body).map_err(|e| format!("{}{e}", tr("réponse illisible : ", "unreadable response: ")))?;
+    let obj = json.as_object().ok_or(tr("réponse inattendue", "unexpected response"))?;
 
-    let mut keys: Vec<&str> = KNOWN.iter().map(|(k, _)| *k).collect();
-    keys.extend(obj.keys().map(String::as_str).filter(|k| !KNOWN.iter().any(|(n, _)| n == k)));
+    let mut keys: Vec<&str> = KNOWN.iter().map(|(k, _, _)| *k).collect();
+    keys.extend(obj.keys().map(String::as_str).filter(|k| !KNOWN.iter().any(|(n, _, _)| n == k)));
 
     let limits: Vec<Limit> = keys
         .into_iter()
         .filter_map(|key| {
             let v = obj.get(key)?;
             let pct = v["utilization"].as_f64()?;
-            let known = KNOWN.iter().find(|(k, _)| *k == key);
+            let known = KNOWN.iter().find(|(k, _, _)| *k == key);
             // Les limites inconnues (noms de code internes) ne s'affichent que si elles comptent.
             if known.is_none() && pct == 0.0 {
                 return None;
             }
-            let label = known.map_or(key.to_owned(), |(_, l)| (*l).to_owned());
+            let label = known.map_or(key.to_owned(), |&(_, fr, en)| tr(fr, en).to_owned());
             let resets_at = v["resets_at"]
                 .as_str()
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
@@ -195,7 +225,7 @@ fn parse(body: &str) -> Result<Usage, String> {
         .collect();
 
     if limits.is_empty() {
-        return Err("aucune limite dans la réponse".into());
+        return Err(tr("aucune limite dans la réponse", "no limits in the response").into());
     }
     Ok(Usage { plan: None, limits, fetched: Local::now() })
 }
@@ -259,13 +289,14 @@ fn set_autostart(enable: bool) -> std::io::Result<()> {
     if let Some(dir) = std::path::Path::new(&path).parent() {
         std::fs::create_dir_all(dir)?;
     }
+    let comment = tr("Limites d'usage de Claude Code dans la zone de notification", "Claude Code usage limits in the system tray");
     std::fs::write(
         &path,
         format!(
             "[Desktop Entry]\n\
              Type=Application\n\
              Name=usclaude\n\
-             Comment=Limites d'usage de Claude Code dans la zone de notification\n\
+             Comment={comment}\n\
              Exec={exec}\n\
              Icon=utilities-system-monitor\n\
              Terminal=false\n\
@@ -292,7 +323,7 @@ fn lock_file(path: &str, wait: bool) -> Option<std::fs::File> {
 fn restart() {
     match std::process::Command::new(current_exe()).arg("--wait-lock").spawn() {
         Ok(_) => std::process::exit(0),
-        Err(e) => eprintln!("usclaude : redémarrage impossible : {e}"),
+        Err(e) => eprintln!("usclaude: {}{e}", tr("redémarrage impossible : ", "restart failed: ")),
     }
 }
 
@@ -308,20 +339,28 @@ fn next_backoff(current: Option<u64>, interval: u64, retry_after: Option<u64>) -
 
 // ---------- Mise en forme ----------
 
+/// « à 15:11 » le jour même, « mer. 16 à 19:59 » sinon (« at 15:11 », « Wed 16 at 19:59 »).
 fn fmt_reset(t: DateTime<Local>, now: DateTime<Local>) -> String {
     const JOURS: [&str; 7] = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."];
+    const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let at = tr("à", "at");
     if t.date_naive() == now.date_naive() {
-        format!("à {}", t.format("%H:%M"))
+        format!("{at} {}", t.format("%H:%M"))
     } else {
-        let jour = JOURS[t.weekday().num_days_from_monday() as usize];
-        format!("{jour} {} à {}", t.day(), t.format("%H:%M"))
+        let i = t.weekday().num_days_from_monday() as usize;
+        let day = if french() { JOURS[i] } else { DAYS[i] };
+        format!("{day} {} {at} {}", t.day(), t.format("%H:%M"))
     }
 }
 
 fn fmt_limit(l: &Limit, now: DateTime<Local>) -> String {
-    let mut s = format!("{} : {:.0} %", l.label, l.pct);
+    let mut s = if french() {
+        format!("{} : {:.0} %", l.label, l.pct)
+    } else {
+        format!("{}: {:.0}%", l.label, l.pct)
+    };
     if let Some(t) = l.resets_at {
-        s += &format!(" — reset {}", fmt_reset(t, now));
+        s += &format!(" — {} {}", tr("reset", "resets"), fmt_reset(t, now));
     }
     s
 }
@@ -402,14 +441,19 @@ impl ksni::Tray for UsageTray {
     // l'ouverture de session) : on patiente, ksni affiche l'icône dès qu'elle apparaît.
     fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
         eprintln!(
-            "usclaude : aucune zone de notification compatible StatusNotifierItem pour l'instant, \
-             l'icône apparaîtra dès qu'elle sera disponible."
+            "usclaude: {}",
+            tr(
+                "aucune zone de notification compatible StatusNotifierItem pour l'instant, \
+                 l'icône apparaîtra dès qu'elle sera disponible.",
+                "no StatusNotifierItem-compatible system tray yet, \
+                 the icon will appear as soon as one is available."
+            )
         );
         true
     }
 
     fn watcher_online(&self) {
-        eprintln!("usclaude : zone de notification trouvée.");
+        eprintln!("usclaude: {}", tr("zone de notification trouvée.", "system tray found."));
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -423,7 +467,7 @@ impl ksni::Tray for UsageTray {
     fn tool_tip(&self) -> ksni::ToolTip {
         let now = Local::now();
         let description = match &self.state {
-            None => "Chargement…".into(),
+            None => tr("Chargement…", "Loading…").into(),
             Some(Err(e)) => e.clone(),
             Some(Ok(u)) => u.limits.iter().map(|l| fmt_limit(l, now)).collect::<Vec<_>>().join("\n"),
         };
@@ -439,27 +483,28 @@ impl ksni::Tray for UsageTray {
 
         let mut items = Vec::new();
         match &self.state {
-            None => items.push(info("Chargement…".into())),
-            Some(Err(e)) => items.push(info(format!("Erreur : {e}"))),
+            None => items.push(info(tr("Chargement…", "Loading…").into())),
+            Some(Err(e)) => items.push(info(format!("{}{e}", tr("Erreur : ", "Error: ")))),
             Some(Ok(u)) => {
                 if let Some(plan) = &u.plan {
-                    items.push(info(format!("Abonnement : {plan}")));
+                    items.push(info(format!("{}{plan}", tr("Abonnement : ", "Plan: "))));
                     items.push(MenuItem::Separator);
                 }
                 items.extend(u.limits.iter().map(|l| info(fmt_limit(l, now))));
                 items.push(MenuItem::Separator);
-                items.push(info(format!("Mis à jour {}", fmt_reset(u.fetched, now))));
+                items.push(info(format!("{} {}", tr("Mis à jour", "Updated"), fmt_reset(u.fetched, now))));
             }
         }
         if let Some(t) = self.next_retry {
-            items.push(info(format!("Service saturé : nouvel essai à {}", t.format("%H:%M"))));
+            let label = tr("Service saturé : nouvel essai à", "Rate-limited: next try at");
+            items.push(info(format!("{label} {}", t.format("%H:%M"))));
         } else if let Some(e) = &self.last_error {
-            items.push(info(format!("Erreur : {e}")));
+            items.push(info(format!("{}{e}", tr("Erreur : ", "Error: "))));
         }
         items.push(MenuItem::Separator);
         items.push(
             StandardItem {
-                label: "Actualiser".into(),
+                label: tr("Actualiser", "Refresh").into(),
                 icon_name: "view-refresh".into(),
                 activate: Box::new(|t: &mut Self| {
                     let _ = t.refresh.send(());
@@ -470,16 +515,16 @@ impl ksni::Tray for UsageTray {
         );
         items.push(
             SubMenu {
-                label: "Réglages".into(),
+                label: tr("Réglages", "Settings").into(),
                 icon_name: "preferences-system".into(),
                 submenu: vec![
-                    info("Rafraîchir toutes les :".into()),
+                    info(tr("Rafraîchir toutes les :", "Refresh every:").into()),
                     RadioGroup {
                         selected: INTERVALS.iter().position(|(s, _)| *s == self.interval).unwrap_or(0),
                         select: Box::new(|t: &mut Self, i| {
                             t.interval = INTERVALS[i].0;
                             if let Err(e) = save_interval(t.interval) {
-                                eprintln!("usclaude : réglage non enregistré : {e}");
+                                eprintln!("usclaude: {}{e}", tr("réglage non enregistré : ", "setting not saved: "));
                             }
                             // Réveille la boucle pour appliquer le nouvel intervalle tout de suite.
                             let _ = t.refresh.send(());
@@ -499,11 +544,11 @@ impl ksni::Tray for UsageTray {
         let autostart = autostart_enabled(std::fs::read_to_string(autostart_path()).ok().as_deref());
         items.push(
             CheckmarkItem {
-                label: "Lancer à l'ouverture de session".into(),
+                label: tr("Lancer à l'ouverture de session", "Start at login").into(),
                 checked: autostart,
                 activate: Box::new(move |_: &mut Self| {
                     if let Err(e) = set_autostart(!autostart) {
-                        eprintln!("usclaude : démarrage automatique : {e}");
+                        eprintln!("usclaude: {}{e}", tr("démarrage automatique : ", "autostart: "));
                     }
                 }),
                 ..Default::default()
@@ -512,7 +557,7 @@ impl ksni::Tray for UsageTray {
         );
         items.push(
             StandardItem {
-                label: "Redémarrer".into(),
+                label: tr("Redémarrer", "Restart").into(),
                 icon_name: "system-reboot".into(),
                 activate: Box::new(|_| restart()),
                 ..Default::default()
@@ -521,7 +566,7 @@ impl ksni::Tray for UsageTray {
         );
         items.push(
             StandardItem {
-                label: "Quitter".into(),
+                label: tr("Quitter", "Quit").into(),
                 icon_name: "application-exit".into(),
                 activate: Box::new(|_| std::process::exit(0)),
                 ..Default::default()
@@ -533,12 +578,15 @@ impl ksni::Tray for UsageTray {
 }
 
 fn main() {
+    let locale = ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"].map(|v| std::env::var(v).ok());
+    FRENCH.store(locale_is_french(&locale), Ordering::Relaxed);
+
     // `usclaude --print` : affiche une fois dans le terminal (diagnostic).
     if std::env::args().any(|a| a == "--print") {
         match fetch() {
             Ok(u) => u.limits.iter().for_each(|l| println!("{}", fmt_limit(l, Local::now()))),
             Err(e) => {
-                eprintln!("Erreur : {e}");
+                eprintln!("{}{e}", tr("Erreur : ", "Error: "));
                 std::process::exit(1);
             }
         }
@@ -547,7 +595,7 @@ fn main() {
 
     let wait = std::env::args().any(|a| a == "--wait-lock");
     let Some(_lock) = lock_instance(wait) else {
-        eprintln!("usclaude tourne déjà.");
+        eprintln!("{}", tr("usclaude tourne déjà.", "usclaude is already running."));
         return;
     };
 
@@ -562,7 +610,7 @@ fn main() {
     let handle = match tray.assume_sni_available(true).spawn() {
         Ok(handle) => handle,
         Err(e) => {
-            eprintln!("usclaude : impossible de créer l'icône : {e}");
+            eprintln!("usclaude: {}{e}", tr("impossible de créer l'icône : ", "cannot create the tray icon: "));
             std::process::exit(1);
         }
     };
@@ -587,7 +635,7 @@ fn main() {
                 // Une erreur (réseau, 429, jeton) n'efface pas les dernières valeurs : elle
                 // s'affiche en plus, sur sa propre ligne du menu.
                 Err(e) if matches!(t.state, Some(Ok(_))) => {
-                    eprintln!("usclaude : {e}");
+                    eprintln!("usclaude: {e}");
                     t.last_error = Some(e.to_string());
                 }
                 Err(e) => t.state = Some(Err(e.to_string())),
@@ -628,13 +676,25 @@ mod tests {
         assert!(parse("pas du json").is_err());
     }
 
+    // Les tests ne passent pas par main() : l'interface y reste en anglais, quelle que
+    // soit la langue de la machine qui les lance.
     #[test]
     fn reset_format() {
         let now: DateTime<Local> = DateTime::parse_from_rfc3339("2026-09-10T10:00:00+02:00").unwrap().into();
         let same_day = now + chrono::Duration::hours(3);
         let later = now + chrono::Duration::days(2);
-        assert_eq!(fmt_reset(same_day, now), format!("à {}", same_day.format("%H:%M")));
-        assert!(fmt_reset(later, now).starts_with("sam. 12 à"));
+        assert_eq!(fmt_reset(same_day, now), format!("at {}", same_day.format("%H:%M")));
+        assert!(fmt_reset(later, now).starts_with("Sat 12 at"));
+    }
+
+    #[test]
+    fn locale_detection() {
+        let s = |v: &str| Some(v.to_owned());
+        assert!(locale_is_french(&[None, None, None, s("fr_FR.UTF-8")]));
+        assert!(!locale_is_french(&[None, s("en_US.UTF-8"), None, s("fr_FR.UTF-8")]), "LC_ALL prime sur LANG");
+        assert!(locale_is_french(&[s("fr:en"), None, None, s("en_US.UTF-8")]), "LANGUAGE en premier");
+        assert!(!locale_is_french(&[s(""), None, None, s("C")]), "variable vide ignorée");
+        assert!(!locale_is_french(&[None, None, None, None]));
     }
 
     #[test]

@@ -6,7 +6,7 @@ A small Linux applet that shows your [Claude Code](https://claude.com/claude-cod
 usage limits in the system tray — the same figures as the `/usage` command: the
 5-hour session and the weekly limits, with their reset times.
 
-![usclaude in the XFCE panel, menu open](assets/screenshot.png)
+![usclaude in the XFCE panel, menu open (French locale)](assets/screenshot.png)
 
 The icon shows two gauges, **session** on the left and **week** on the right: green
 below 50 %, orange below 80 %, red above. Details appear on hover and in the menu.
@@ -14,7 +14,8 @@ below 50 %, orange below 80 %, red above. Details appear on hover and in the men
 Written in Rust with [ksni](https://github.com/iovxw/ksni) (StatusNotifierItem
 protocol, no GTK). A single static binary with no dependencies.
 
-> Independent project, not affiliated with Anthropic. The interface is in French.
+> Independent project, not affiliated with Anthropic. The interface is in English,
+> or in French when the system language is French.
 
 ## Requirements
 
@@ -70,19 +71,18 @@ usclaude &
 cargo install --git https://github.com/niqoz/usclaude
 ```
 
-To start it with your session, tick **Lancer à l'ouverture de session** (*start
-at login*) in its menu.
+To start it with your session, tick **Start at login** in its menu.
 
 ## Menu
 
 | Entry | Meaning |
 | --- | --- |
 | Limits | Percentage used and reset time of each limit. |
-| Actualiser | Refresh now. |
-| Réglages | Refresh interval: 90 s, 3 min, 5 min or 10 min. |
-| Lancer à l'ouverture de session | Creates or removes the autostart entry. |
-| Redémarrer | Restarts the applet, e.g. after updating the binary. |
-| Quitter | Quits. |
+| Refresh | Refresh now. |
+| Settings | Refresh interval: 90 s, 3 min, 5 min or 10 min. |
+| Start at login | Creates or removes the autostart entry. |
+| Restart | Restarts the applet, e.g. after updating the binary. |
+| Quit | Quits. |
 
 Only one instance runs at a time: a second launch exits immediately.
 
@@ -94,7 +94,7 @@ read from `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`).
 
 The token is **read, never modified**: the applet does not refresh it itself, as
 that would invalidate Claude Code's session. When it expires, the applet shows
-"jeton expiré" (*token expired*) until the next use of `claude`, which renews it.
+"token expired" until the next use of `claude`, which renews it.
 No other data is sent anywhere.
 
 Files used:
@@ -126,9 +126,10 @@ prints the usage once in the terminal, or the error encountered.
   each refusal, up to 10 min. It returns to the chosen interval as soon as a
   request succeeds; the menu shows the time of the next attempt.
 - **At startup**, the applet immediately shows the last known figures with their
-  time ("Mis à jour mer. 9 à 15:11"), until the first request succeeds. An error
+  time ("Updated Wed 9 at 15:11"), until the first request succeeds. An error
   that occurred since is shown on its own menu line.
-- French interface only.
+- **Language**: English, or French when the system language is French
+  (`LANG=fr_…`). To force English: `LANG=en_US.UTF-8 usclaude`.
 
 ## Tests
 
