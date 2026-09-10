@@ -108,6 +108,24 @@ Fichiers utilisés :
 | `~/.config/autostart/usclaude.desktop` | Démarrage automatique, si activé. |
 | `$XDG_RUNTIME_DIR/usclaude-$USER.lock` | Verrou d'instance unique. |
 
+## Codex
+
+```sh
+usclaude --codex &
+```
+
+affiche une deuxième icône, au contour bleu, pour les limites de
+[Codex](https://github.com/openai/codex) d'un compte ChatGPT (session de 5 heures
+et semaine), les mêmes que la commande `/status` de Codex. Contrairement aux
+fichiers de session de Codex, les chiffres couvrent toute l'utilisation du compte,
+quelle que soit la machine.
+
+Le jeton est lu, jamais modifié, dans `~/.codex/auth.json` (ou `$CODEX_HOME`) ; le
+service interrogé est `https://chatgpt.com/backend-api/wham/usage`, lui aussi non
+documenté. Cette instance a ses propres réglages, cache, verrou et démarrage
+automatique, sous le nom `usclaude-codex`. `usclaude --codex --print` fonctionne
+aussi.
+
 ## Diagnostic
 
 ```sh

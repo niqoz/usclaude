@@ -3,6 +3,9 @@
 //!
 //! Le jeton OAuth est lu (jamais modifié) dans `~/.claude/.credentials.json`.
 //! Quand il expire, c'est Claude Code qui le rafraîchit à sa prochaine utilisation.
+//!
+//! `usclaude --codex` fait de même pour Codex (compte ChatGPT) : deuxième icône,
+//! jeton lu dans `~/.codex/auth.json`, réglages et cache séparés.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -13,6 +16,8 @@ use ksni::blocking::TrayMethods;
 use serde_json::Value;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+/// Endpoint non documenté, celui qu'utilise la commande `/status` de Codex.
+const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 /// Intervalles de rafraîchissement proposés (secondes, libellé) ; le premier par défaut.
 const INTERVALS: [(u64, &str); 4] = [(90, "90 s"), (180, "3 min"), (300, "5 min"), (600, "10 min")];
 
@@ -41,6 +46,18 @@ fn french() -> bool {
 /// Texte dans la langue de l'interface.
 fn tr(fr: &'static str, en: &'static str) -> &'static str {
     if french() { fr } else { en }
+}
+
+/// Mode Codex (`--codex`) au lieu de Claude Code. Fixé au démarrage.
+static CODEX: AtomicBool = AtomicBool::new(false);
+
+fn codex() -> bool {
+    CODEX.load(Ordering::Relaxed)
+}
+
+/// Nom de l'instance : sert au verrou, au cache, aux réglages et au démarrage automatique.
+fn app() -> &'static str {
+    if codex() { "usclaude-codex" } else { "usclaude" }
 }
 
 /// Français si la première variable renseignée parmi LANGUAGE, LC_ALL, LC_MESSAGES et
@@ -121,25 +138,60 @@ fn read_token() -> Result<(String, Option<String>), String> {
     Ok((token.to_owned(), plan))
 }
 
+/// Renvoie (jeton, identifiant du compte ChatGPT). Comme pour Claude, le jeton n'est
+/// jamais rafraîchi ici : c'est Codex qui s'en charge à sa prochaine utilisation.
+fn read_codex_token() -> Result<(String, String), String> {
+    let dir = std::env::var("CODEX_HOME").unwrap_or_else(|_| format!("{}/.codex", home()));
+    let path = format!("{dir}/auth.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
+    let json: Value = serde_json::from_str(&text).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
+    let tokens = &json["tokens"];
+    match (tokens["access_token"].as_str(), tokens["account_id"].as_str()) {
+        (Some(token), Some(account)) => Ok((token.to_owned(), account.to_owned())),
+        _ => Err(tr(
+            "pas de connexion ChatGPT (lancer codex login)",
+            "not signed in with ChatGPT (run codex login)",
+        )
+        .into()),
+    }
+}
+
 fn fetch() -> Result<Usage, FetchError> {
-    let (token, plan) = read_token()?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
         // Codes d'erreur traités à la main, pour lire l'en-tête Retry-After d'un 429.
         .http_status_as_error(false)
         .build()
         .into();
-    let mut resp = agent
-        .get(USAGE_URL)
-        .header("Authorization", &format!("Bearer {token}"))
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .header("User-Agent", concat!("usclaude/", env!("CARGO_PKG_VERSION")))
+    let user_agent = concat!("usclaude/", env!("CARGO_PKG_VERSION"));
+    // Pour Codex, l'abonnement figure dans la réponse.
+    let (request, plan) = if codex() {
+        let (token, account) = read_codex_token()?;
+        let request = agent
+            .get(CODEX_USAGE_URL)
+            .header("Authorization", &format!("Bearer {token}"))
+            .header("ChatGPT-Account-Id", &account);
+        (request, None)
+    } else {
+        let (token, plan) = read_token()?;
+        let request = agent
+            .get(USAGE_URL)
+            .header("Authorization", &format!("Bearer {token}"))
+            .header("anthropic-beta", "oauth-2025-04-20");
+        (request, plan)
+    };
+    let mut resp = request
+        .header("User-Agent", user_agent)
         .call()
         .map_err(|e| format!("{}{e}", tr("requête : ", "request: ")))?;
     match resp.status().as_u16() {
         200..=299 => {}
         401 => {
-            let msg = tr("jeton refusé : lancer claude pour le rafraîchir", "token rejected: run claude to refresh it");
+            let msg = if codex() {
+                tr("jeton refusé : lancer codex pour le rafraîchir", "token rejected: run codex to refresh it")
+            } else {
+                tr("jeton refusé : lancer claude pour le rafraîchir", "token rejected: run claude to refresh it")
+            };
             return Err(msg.to_owned().into());
         }
         429 => {
@@ -150,7 +202,7 @@ fn fetch() -> Result<Usage, FetchError> {
     }
     let body = resp.body_mut().read_to_string().map_err(|e| format!("{}{e}", tr("réponse : ", "response: ")))?;
     let mut usage = parse(&body)?;
-    usage.plan = plan;
+    usage.plan = plan.or(usage.plan);
     save_cache(&cache_json(&body, usage.plan.as_deref(), usage.fetched));
     Ok(usage)
 }
@@ -164,7 +216,7 @@ fn parse_retry_after(header: Option<&str>) -> Option<u64> {
 
 fn cache_path() -> String {
     let cache = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{}/.cache", home()));
-    format!("{cache}/usclaude/last.json")
+    format!("{cache}/{}/last.json", app())
 }
 
 fn cache_json(body: &str, plan: Option<&str>, fetched: DateTime<Local>) -> String {
@@ -176,7 +228,7 @@ fn parse_cache(text: &str) -> Option<Usage> {
     let json: Value = serde_json::from_str(text).ok()?;
     let mut usage = parse(json["body"].as_str()?).ok()?;
     usage.fetched = DateTime::parse_from_rfc3339(json["fetched"].as_str()?).ok()?.with_timezone(&Local);
-    usage.plan = json["plan"].as_str().map(str::to_owned);
+    usage.plan = json["plan"].as_str().map(str::to_owned).or(usage.plan);
     Some(usage)
 }
 
@@ -191,13 +243,47 @@ fn save_cache(json: &str) {
         .map_or(Ok(()), std::fs::create_dir_all)
         .and_then(|()| std::fs::write(&path, json));
     if let Err(e) = written {
-        eprintln!("usclaude: {}{e}", tr("cache non enregistré : ", "cache not saved: "));
+        eprintln!("{}: {}{e}", app(), tr("cache non enregistré : ", "cache not saved: "));
     }
+}
+
+fn parse(body: &str) -> Result<Usage, String> {
+    if codex() { parse_codex(body) } else { parse_claude(body) }
+}
+
+/// Réponse Codex : `rate_limit.primary_window` (5 h) et `secondary_window` (semaine),
+/// rangées sous les clés de Claude pour partager l'icône.
+fn parse_codex(body: &str) -> Result<Usage, String> {
+    let json: Value =
+        serde_json::from_str(body).map_err(|e| format!("{}{e}", tr("réponse illisible : ", "unreadable response: ")))?;
+    let limits: Vec<Limit> = [("five_hour", "primary_window"), ("seven_day", "secondary_window")]
+        .into_iter()
+        .filter_map(|(key, field)| {
+            let w = &json["rate_limit"][field];
+            let pct = w["used_percent"].as_f64()?;
+            let hours = w["limit_window_seconds"].as_u64().unwrap_or(0) / 3600;
+            let label = match hours {
+                168 => tr("Semaine", "Weekly").to_owned(),
+                h if french() => format!("Session ({h} h)"),
+                h => format!("Session ({h}h)"),
+            };
+            let resets_at = w["reset_at"]
+                .as_i64()
+                .and_then(|s| DateTime::from_timestamp(s, 0))
+                .map(|d| d.with_timezone(&Local));
+            Some(Limit { key: key.to_owned(), label, pct, resets_at })
+        })
+        .collect();
+    if limits.is_empty() {
+        return Err(tr("aucune limite dans la réponse", "no limits in the response").into());
+    }
+    let plan = json["plan_type"].as_str().map(str::to_owned);
+    Ok(Usage { plan, limits, fetched: Local::now() })
 }
 
 /// Garde toutes les entrées de la forme `{"utilization": n, "resets_at": …}`,
 /// connues d'abord, puis les éventuelles nouvelles sous leur nom brut.
-fn parse(body: &str) -> Result<Usage, String> {
+fn parse_claude(body: &str) -> Result<Usage, String> {
     let json: Value =
         serde_json::from_str(body).map_err(|e| format!("{}{e}", tr("réponse illisible : ", "unreadable response: ")))?;
     let obj = json.as_object().ok_or(tr("réponse inattendue", "unexpected response"))?;
@@ -238,12 +324,12 @@ fn home() -> String {
 
 fn autostart_path() -> String {
     let config = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}/.config", home()));
-    format!("{config}/autostart/usclaude.desktop")
+    format!("{config}/autostart/{}.desktop", app())
 }
 
 fn interval_path() -> String {
     let config = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}/.config", home()));
-    format!("{config}/usclaude/interval")
+    format!("{config}/{}/interval", app())
 }
 
 /// Intervalle enregistré s'il fait partie de la liste, sinon celui par défaut.
@@ -285,17 +371,23 @@ fn set_autostart(enable: bool) -> std::io::Result<()> {
     }
     // Le binaire installé de préférence, pour survivre à un `cargo clean`.
     let installed = format!("{}/.local/bin/usclaude", home());
-    let exec = if std::path::Path::new(&installed).exists() { installed } else { current_exe() };
+    let mut exec = if std::path::Path::new(&installed).exists() { installed } else { current_exe() };
+    let comment = if codex() {
+        exec += " --codex";
+        tr("Limites d'usage de Codex dans la zone de notification", "Codex usage limits in the system tray")
+    } else {
+        tr("Limites d'usage de Claude Code dans la zone de notification", "Claude Code usage limits in the system tray")
+    };
     if let Some(dir) = std::path::Path::new(&path).parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let comment = tr("Limites d'usage de Claude Code dans la zone de notification", "Claude Code usage limits in the system tray");
+    let name = app();
     std::fs::write(
         &path,
         format!(
             "[Desktop Entry]\n\
              Type=Application\n\
-             Name=usclaude\n\
+             Name={name}\n\
              Comment={comment}\n\
              Exec={exec}\n\
              Icon=utilities-system-monitor\n\
@@ -309,7 +401,7 @@ fn set_autostart(enable: bool) -> std::io::Result<()> {
 /// `wait` : attendre qu'il se libère (redémarrage) au lieu d'abandonner.
 fn lock_instance(wait: bool) -> Option<std::fs::File> {
     let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    lock_file(&format!("{dir}/usclaude-{}.lock", std::env::var("USER").unwrap_or_default()), wait)
+    lock_file(&format!("{dir}/{}-{}.lock", app(), std::env::var("USER").unwrap_or_default()), wait)
 }
 
 fn lock_file(path: &str, wait: bool) -> Option<std::fs::File> {
@@ -321,9 +413,14 @@ fn lock_file(path: &str, wait: bool) -> Option<std::fs::File> {
 /// Relance le binaire (utile après une réinstallation) puis quitte.
 /// La nouvelle instance attend que celle-ci ait libéré le verrou.
 fn restart() {
-    match std::process::Command::new(current_exe()).arg("--wait-lock").spawn() {
+    let mut cmd = std::process::Command::new(current_exe());
+    cmd.arg("--wait-lock");
+    if codex() {
+        cmd.arg("--codex");
+    }
+    match cmd.spawn() {
         Ok(_) => std::process::exit(0),
-        Err(e) => eprintln!("usclaude: {}{e}", tr("redémarrage impossible : ", "restart failed: ")),
+        Err(e) => eprintln!("{}: {}{e}", app(), tr("redémarrage impossible : ", "restart failed: ")),
     }
 }
 
@@ -378,7 +475,8 @@ fn level_color(pct: f64) -> [u8; 3] {
 }
 
 /// Deux jauges verticales : session à gauche, semaine à droite.
-/// Une croix grise quand il n'y a pas de données.
+/// Une croix quand il n'y a pas de données. Contour gris pour Claude, bleu pour Codex,
+/// pour distinguer les deux icônes côte à côte.
 fn draw_icon(session: Option<f64>, week: Option<f64>) -> ksni::Icon {
     const S: usize = 32;
     let mut px = vec![0u8; S * S * 4]; // ARGB, transparent
@@ -386,7 +484,7 @@ fn draw_icon(session: Option<f64>, week: Option<f64>) -> ksni::Icon {
         let i = (y * S + x) * 4;
         px[i..i + 4].copy_from_slice(&[0xff, r, g, b]);
     };
-    let grey = [0x90, 0x90, 0x90];
+    let grey = if codex() { [0x5c, 0x9d, 0xf0] } else { [0x90, 0x90, 0x90] };
 
     let (Some(session), Some(week)) = (session, week) else {
         for i in 8..24 {
@@ -430,18 +528,19 @@ impl ksni::Tray for UsageTray {
     const MENU_ON_ACTIVATE: bool = true;
 
     fn id(&self) -> String {
-        env!("CARGO_PKG_NAME").into()
+        app().into()
     }
 
     fn title(&self) -> String {
-        "Claude — usage".into()
+        if codex() { "Codex — usage".into() } else { "Claude — usage".into() }
     }
 
     // Pas de zone de notification (bureau non compatible, ou panneau pas encore prêt à
     // l'ouverture de session) : on patiente, ksni affiche l'icône dès qu'elle apparaît.
     fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
         eprintln!(
-            "usclaude: {}",
+            "{}: {}",
+            app(),
             tr(
                 "aucune zone de notification compatible StatusNotifierItem pour l'instant, \
                  l'icône apparaîtra dès qu'elle sera disponible.",
@@ -453,7 +552,7 @@ impl ksni::Tray for UsageTray {
     }
 
     fn watcher_online(&self) {
-        eprintln!("usclaude: {}", tr("zone de notification trouvée.", "system tray found."));
+        eprintln!("{}: {}", app(), tr("zone de notification trouvée.", "system tray found."));
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -471,7 +570,8 @@ impl ksni::Tray for UsageTray {
             Some(Err(e)) => e.clone(),
             Some(Ok(u)) => u.limits.iter().map(|l| fmt_limit(l, now)).collect::<Vec<_>>().join("\n"),
         };
-        ksni::ToolTip { title: "Claude Code — /usage".into(), description, ..Default::default() }
+        let title = if codex() { "Codex — /status" } else { "Claude Code — /usage" };
+        ksni::ToolTip { title: title.into(), description, ..Default::default() }
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -524,7 +624,7 @@ impl ksni::Tray for UsageTray {
                         select: Box::new(|t: &mut Self, i| {
                             t.interval = INTERVALS[i].0;
                             if let Err(e) = save_interval(t.interval) {
-                                eprintln!("usclaude: {}{e}", tr("réglage non enregistré : ", "setting not saved: "));
+                                eprintln!("{}: {}{e}", app(), tr("réglage non enregistré : ", "setting not saved: "));
                             }
                             // Réveille la boucle pour appliquer le nouvel intervalle tout de suite.
                             let _ = t.refresh.send(());
@@ -548,7 +648,7 @@ impl ksni::Tray for UsageTray {
                 checked: autostart,
                 activate: Box::new(move |_: &mut Self| {
                     if let Err(e) = set_autostart(!autostart) {
-                        eprintln!("usclaude: {}{e}", tr("démarrage automatique : ", "autostart: "));
+                        eprintln!("{}: {}{e}", app(), tr("démarrage automatique : ", "autostart: "));
                     }
                 }),
                 ..Default::default()
@@ -580,6 +680,7 @@ impl ksni::Tray for UsageTray {
 fn main() {
     let locale = ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"].map(|v| std::env::var(v).ok());
     FRENCH.store(locale_is_french(&locale), Ordering::Relaxed);
+    CODEX.store(std::env::args().any(|a| a == "--codex"), Ordering::Relaxed);
 
     // `usclaude --print` : affiche une fois dans le terminal (diagnostic).
     if std::env::args().any(|a| a == "--print") {
@@ -595,7 +696,7 @@ fn main() {
 
     let wait = std::env::args().any(|a| a == "--wait-lock");
     let Some(_lock) = lock_instance(wait) else {
-        eprintln!("{}", tr("usclaude tourne déjà.", "usclaude is already running."));
+        eprintln!("{} {}", app(), tr("tourne déjà.", "is already running."));
         return;
     };
 
@@ -610,7 +711,7 @@ fn main() {
     let handle = match tray.assume_sni_available(true).spawn() {
         Ok(handle) => handle,
         Err(e) => {
-            eprintln!("usclaude: {}{e}", tr("impossible de créer l'icône : ", "cannot create the tray icon: "));
+            eprintln!("{}: {}{e}", app(), tr("impossible de créer l'icône : ", "cannot create the tray icon: "));
             std::process::exit(1);
         }
     };
@@ -635,7 +736,7 @@ fn main() {
                 // Une erreur (réseau, 429, jeton) n'efface pas les dernières valeurs : elle
                 // s'affiche en plus, sur sa propre ligne du menu.
                 Err(e) if matches!(t.state, Some(Ok(_))) => {
-                    eprintln!("usclaude: {e}");
+                    eprintln!("{}: {e}", app());
                     t.last_error = Some(e.to_string());
                 }
                 Err(e) => t.state = Some(Err(e.to_string())),
@@ -668,6 +769,22 @@ mod tests {
         assert_eq!(u.pct("seven_day"), Some(62.5));
         assert!(u.limits[0].resets_at.is_some());
         assert!(u.limits[2].resets_at.is_none());
+    }
+
+    #[test]
+    fn parse_codex_windows() {
+        let body = r#"{"plan_type": "plus", "rate_limit": {
+            "primary_window": {"used_percent": 100, "limit_window_seconds": 18000, "reset_at": 1789058810},
+            "secondary_window": {"used_percent": 37, "limit_window_seconds": 604800, "reset_at": 1789468946}
+        }}"#;
+        let u = parse_codex(body).unwrap();
+        assert_eq!(u.plan.as_deref(), Some("plus"));
+        assert_eq!(u.pct("five_hour"), Some(100.0));
+        assert_eq!(u.pct("seven_day"), Some(37.0));
+        assert_eq!(u.limits[0].label, "Session (5h)");
+        assert_eq!(u.limits[1].label, "Weekly");
+        assert!(u.limits[1].resets_at.is_some());
+        assert!(parse_codex(r#"{"rate_limit": null}"#).is_err());
     }
 
     #[test]

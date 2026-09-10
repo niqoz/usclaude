@@ -107,6 +107,22 @@ Files used:
 | `~/.config/autostart/usclaude.desktop` | Autostart, if enabled. |
 | `$XDG_RUNTIME_DIR/usclaude-$USER.lock` | Single-instance lock. |
 
+## Codex
+
+```sh
+usclaude --codex &
+```
+
+shows a second icon, with a blue outline, for the
+[Codex](https://github.com/openai/codex) limits of a ChatGPT account (5-hour
+session and week), the same figures as Codex's `/status`. Unlike Codex's session
+files, the figures cover every use of the account, on any machine.
+
+The token is read, never modified, from `~/.codex/auth.json` (or `$CODEX_HOME`);
+the service queried is `https://chatgpt.com/backend-api/wham/usage`, also
+undocumented. This instance has its own settings, cache, lock and autostart entry,
+under the name `usclaude-codex`. `usclaude --codex --print` works too.
+
 ## Troubleshooting
 
 ```sh
