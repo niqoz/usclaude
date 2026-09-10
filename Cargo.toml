@@ -1,6 +1,6 @@
 [package]
 name = "usclaude"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Icône de zone de notification affichant les limites d'usage de Claude Code (/usage)"

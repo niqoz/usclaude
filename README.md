@@ -51,7 +51,7 @@ From the [latest release](https://github.com/niqoz/usclaude/releases/latest).
 **Debian, Ubuntu, Linux Mint**:
 
 ```sh
-sudo apt install ./usclaude_0.1.3_amd64.deb
+sudo apt install ./usclaude_0.2.0_amd64.deb
 ```
 
 The applet is added to the menu under **Accessories** and can also be started by
@@ -60,8 +60,8 @@ typing `usclaude`.
 **Other distributions** (x86_64): static binary, no dependencies at all.
 
 ```sh
-tar xzf usclaude-0.1.3-x86_64-linux.tar.gz
-install -m 755 usclaude-0.1.3-x86_64-linux/usclaude ~/.local/bin/
+tar xzf usclaude-0.2.0-x86_64-linux.tar.gz
+install -m 755 usclaude-0.2.0-x86_64-linux/usclaude ~/.local/bin/
 usclaude &
 ```
 
