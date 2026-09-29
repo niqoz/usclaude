@@ -92,16 +92,19 @@ The applet queries the same service as `/usage`
 (`https://api.anthropic.com/api/oauth/usage`) with Claude Code's sign-in token,
 read from `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`).
 
-The token is **read, never modified**: the applet does not refresh it itself, as
-that would invalidate Claude Code's session. When it expires, the applet shows
-"token expired" until the next use of `claude`, which renews it.
+This token expires after a few hours, and Claude Code only renews it when it is
+used: using Claude Desktop alone is not enough. Once the token has expired, the
+applet therefore refreshes it itself, as Claude Code would, and rewrites the file.
+It takes the same lock as Claude Code (`~/.claude.lock`) so that both never refresh
+at the same time: a refresh token can only be used once. If the sign-in itself has
+expired, the applet asks to run `claude`, then `/login`.
 No other data is sent anywhere.
 
 Files used:
 
 | File | Purpose |
 | --- | --- |
-| `~/.claude/.credentials.json` | Sign-in token, read-only. |
+| `~/.claude/.credentials.json` | Sign-in token, rewritten after a refresh. |
 | `~/.config/usclaude/interval` | Chosen interval, in seconds. |
 | `~/.cache/usclaude/last.json` | Last valid response, shown again at startup. |
 | `~/.config/autostart/usclaude.desktop` | Autostart, if enabled. |
@@ -118,7 +121,8 @@ shows a second icon, with a blue outline, for the
 session and week), the same figures as Codex's `/status`. Unlike Codex's session
 files, the figures cover every use of the account, on any machine.
 
-The token is read, never modified, from `~/.codex/auth.json` (or `$CODEX_HOME`);
+The token is read from `~/.codex/auth.json` (or `$CODEX_HOME`), and refreshed as
+for Claude once expired (after 10 days without using Codex);
 the service queried is `https://chatgpt.com/backend-api/wham/usage`, also
 undocumented. This instance has its own settings, cache, lock and autostart entry,
 under the name `usclaude-codex`. `usclaude --codex --print` works too.

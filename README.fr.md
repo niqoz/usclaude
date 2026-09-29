@@ -93,16 +93,20 @@ L'applet interroge le même service que `/usage`
 (`https://api.anthropic.com/api/oauth/usage`) avec le jeton de connexion de Claude
 Code, lu dans `~/.claude/.credentials.json` (ou `$CLAUDE_CONFIG_DIR`).
 
-Ce jeton est **lu, jamais modifié** : l'applet ne le rafraîchit pas elle-même, car
-cela invaliderait la session de Claude Code. Quand il expire, l'applet affiche
-« jeton expiré » jusqu'à la prochaine utilisation de `claude`, qui le renouvelle.
+Ce jeton expire au bout de quelques heures, et Claude Code ne le renouvelle que
+lorsqu'on s'en sert : utiliser seulement Claude Desktop ne suffit pas. Une fois le
+jeton expiré, l'applet le rafraîchit donc elle-même, comme le ferait Claude Code, et
+réécrit le fichier. Elle prend pour cela le même verrou que Claude Code
+(`~/.claude.lock`), pour que les deux ne rafraîchissent jamais en même temps : le
+jeton de rafraîchissement ne sert qu'une fois. Si la connexion elle-même a expiré,
+l'applet demande de relancer `claude` puis `/login`.
 Aucune autre donnée n'est envoyée ni conservée.
 
 Fichiers utilisés :
 
 | Fichier | Usage |
 | --- | --- |
-| `~/.claude/.credentials.json` | Jeton de connexion, en lecture seule. |
+| `~/.claude/.credentials.json` | Jeton de connexion, réécrit après rafraîchissement. |
 | `~/.config/usclaude/interval` | Intervalle choisi, en secondes. |
 | `~/.cache/usclaude/last.json` | Dernière réponse valide, réaffichée au démarrage. |
 | `~/.config/autostart/usclaude.desktop` | Démarrage automatique, si activé. |
@@ -120,7 +124,8 @@ et semaine), les mêmes que la commande `/status` de Codex. Contrairement aux
 fichiers de session de Codex, les chiffres couvrent toute l'utilisation du compte,
 quelle que soit la machine.
 
-Le jeton est lu, jamais modifié, dans `~/.codex/auth.json` (ou `$CODEX_HOME`) ; le
+Le jeton est lu dans `~/.codex/auth.json` (ou `$CODEX_HOME`), et rafraîchi comme
+pour Claude une fois expiré (au bout de 10 jours sans utiliser Codex) ; le
 service interrogé est `https://chatgpt.com/backend-api/wham/usage`, lui aussi non
 documenté. Cette instance a ses propres réglages, cache, verrou et démarrage
 automatique, sous le nom `usclaude-codex`. `usclaude --codex --print` fonctionne

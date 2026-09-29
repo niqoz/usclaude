@@ -1,8 +1,9 @@
 //! usclaude : affiche dans la zone de notification les limites d'usage de
 //! Claude Code, les mêmes que la commande `/usage`.
 //!
-//! Le jeton OAuth est lu (jamais modifié) dans `~/.claude/.credentials.json`.
-//! Quand il expire, c'est Claude Code qui le rafraîchit à sa prochaine utilisation.
+//! Le jeton OAuth est lu dans `~/.claude/.credentials.json`. Expiré, il est rafraîchi
+//! ici comme le ferait Claude Code, qui n'y touche pas si l'on n'utilise que Claude
+//! Desktop.
 //!
 //! `usclaude --codex` fait de même pour Codex (compte ChatGPT) : deuxième icône,
 //! jeton lu dans `~/.codex/auth.json`, réglages et cache séparés.
@@ -18,6 +19,11 @@ use serde_json::Value;
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 /// Endpoint non documenté, celui qu'utilise la commande `/status` de Codex.
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+/// Rafraîchissement des jetons : mêmes adresses et identifiants que Claude Code et Codex.
+const CLAUDE_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 /// Intervalles de rafraîchissement proposés (secondes, libellé) ; le premier par défaut.
 const INTERVALS: [(u64, &str); 4] = [(90, "90 s"), (180, "3 min"), (300, "5 min"), (600, "10 min")];
 
@@ -111,40 +117,156 @@ impl std::fmt::Display for FetchError {
     }
 }
 
+fn claude_dir() -> String {
+    std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_else(|_| format!("{}/.claude", home()))
+}
+
 fn credentials_path() -> String {
-    let dir = std::env::var("CLAUDE_CONFIG_DIR")
-        .unwrap_or_else(|_| format!("{}/.claude", home()));
-    format!("{dir}/.credentials.json")
+    format!("{}/.credentials.json", claude_dir())
 }
 
-/// Renvoie (jeton, type d'abonnement).
-fn read_token() -> Result<(String, Option<String>), String> {
-    let path = credentials_path();
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
-    let json: Value = serde_json::from_str(&text).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
-    let oauth = &json["claudeAiOauth"];
-    let token = oauth["accessToken"]
-        .as_str()
-        .ok_or(tr(
-            "pas de connexion claude.ai (lancer claude puis /login)",
-            "not signed in to claude.ai (run claude, then /login)",
-        ))?;
-    if let Some(exp) = oauth["expiresAt"].as_i64()
-        && exp < chrono::Utc::now().timestamp_millis()
-    {
-        return Err(tr("jeton expiré : lancer claude pour le rafraîchir", "token expired: run claude to refresh it").into());
+/// Renvoie (contenu brut, JSON).
+fn read_json(path: &str) -> Result<(String, Value), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
+    let json = serde_json::from_str(&text).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
+    Ok((text, json))
+}
+
+/// Réécrit le fichier de jetons sans passer par un état à moitié écrit (fichier
+/// temporaire puis renommage), lisible par son seul propriétaire, dans la même mise en
+/// forme qu'avant (sur une ligne ou indentée).
+fn write_json(path: &str, old_text: &str, json: &Value) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let text = if old_text.contains('\n') {
+        serde_json::to_string_pretty(json)
+    } else {
+        serde_json::to_string(json)
     }
-    let plan = oauth["subscriptionType"].as_str().map(str::to_owned);
-    Ok((token.to_owned(), plan))
+    .map_err(|e| e.to_string())?;
+    let tmp = format!("{path}.usclaude.tmp");
+    let err = |e: std::io::Error| format!("{path}{}{e}", tr(" : ", ": "));
+    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(err)?;
+    file.write_all(text.as_bytes()).and_then(|_| file.sync_all()).map_err(err)?;
+    std::fs::rename(&tmp, path).map_err(err)
 }
 
-/// Renvoie (jeton, identifiant du compte ChatGPT). Comme pour Claude, le jeton n'est
-/// jamais rafraîchi ici : c'est Codex qui s'en charge à sa prochaine utilisation.
-fn read_codex_token() -> Result<(String, String), String> {
+/// Demande de nouveaux jetons au service. Un refus (400, 401) veut dire que le jeton de
+/// rafraîchissement n'est plus valable : il faut se reconnecter.
+fn post_refresh(agent: &ureq::Agent, url: &str, body: &Value, relogin: &str) -> Result<Value, String> {
+    let mut resp = agent
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", concat!("usclaude/", env!("CARGO_PKG_VERSION")))
+        .send(body.to_string())
+        .map_err(|e| format!("{}{e}", tr("rafraîchissement du jeton : ", "token refresh: ")))?;
+    match resp.status().as_u16() {
+        200..=299 => {}
+        400 | 401 => return Err(relogin.to_owned()),
+        s => return Err(format!("{} {s}", tr("rafraîchissement du jeton : réponse HTTP", "token refresh: HTTP response"))),
+    }
+    let text = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    serde_json::from_str(&text).map_err(|e| format!("{}{e}", tr("rafraîchissement du jeton : ", "token refresh: ")))
+}
+
+/// Verrou de Claude Code pendant qu'il rafraîchit son jeton : le répertoire
+/// `~/.claude.lock` (format proper-lockfile). Le prendre aussi évite que les deux
+/// utilisent le même jeton de rafraîchissement, qui ne sert qu'une fois.
+struct DirLock(String);
+
+impl Drop for DirLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
+fn lock_dir(path: String) -> Option<DirLock> {
+    if std::fs::create_dir(&path).is_err() {
+        // Laissé par un processus tué : proper-lockfile le tient pour périmé après 10 s
+        // sans mise à jour. 30 s ici, par prudence.
+        let stale = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().is_ok_and(|e| e > Duration::from_secs(30)));
+        if !stale || std::fs::remove_dir(&path).is_err() || std::fs::create_dir(&path).is_err() {
+            return None;
+        }
+    }
+    Some(DirLock(path))
+}
+
+/// Renvoie (jeton, type d'abonnement). Le jeton expiré est rafraîchi au passage.
+fn read_token(agent: &ureq::Agent) -> Result<(String, Option<String>), String> {
+    let path = credentials_path();
+    let (_, json) = read_json(&path)?;
+    let oauth = &json["claudeAiOauth"];
+    let token = oauth["accessToken"].as_str().ok_or(tr(
+        "pas de connexion claude.ai (lancer claude puis /login)",
+        "not signed in to claude.ai (run claude, then /login)",
+    ))?;
+    let plan = oauth["subscriptionType"].as_str().map(str::to_owned);
+    if !claude_expired(oauth) {
+        return Ok((token.to_owned(), plan));
+    }
+    Ok((refresh_claude(agent, &path)?, plan))
+}
+
+fn claude_expired(oauth: &Value) -> bool {
+    oauth["expiresAt"].as_i64().is_some_and(|exp| exp < chrono::Utc::now().timestamp_millis())
+}
+
+fn refresh_claude(agent: &ureq::Agent, path: &str) -> Result<String, String> {
+    let relogin = tr("connexion expirée : lancer claude puis /login", "sign-in expired: run claude, then /login");
+    let Some(_lock) = lock_dir(format!("{}.lock", claude_dir())) else {
+        return Err(tr("jeton en cours de rafraîchissement par Claude Code", "token being refreshed by Claude Code").into());
+    };
+    // Relu sous verrou : Claude Code a pu le rafraîchir entre-temps.
+    let (text, mut json) = read_json(path)?;
+    let oauth = &json["claudeAiOauth"];
+    if !claude_expired(oauth)
+        && let Some(token) = oauth["accessToken"].as_str()
+    {
+        return Ok(token.to_owned());
+    }
+    let refresh_token = oauth["refreshToken"].as_str().ok_or(relogin)?;
+    let mut body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLAUDE_CLIENT_ID,
+    });
+    if let Some(scopes) = oauth["scopes"].as_array() {
+        let scopes: Vec<&str> = scopes.iter().filter_map(Value::as_str).collect();
+        body["scope"] = scopes.join(" ").into();
+    }
+    let resp = post_refresh(agent, CLAUDE_TOKEN_URL, &body, relogin)?;
+    let token = apply_claude_refresh(&mut json["claudeAiOauth"], &resp, chrono::Utc::now().timestamp_millis())
+        .ok_or(tr("rafraîchissement du jeton : réponse inattendue", "token refresh: unexpected response"))?;
+    write_json(path, &text, &json)?;
+    Ok(token)
+}
+
+/// Reporte la réponse du service dans `claudeAiOauth`, comme Claude Code : le jeton de
+/// rafraîchissement ne change que s'il en est fourni un nouveau. Renvoie le jeton.
+fn apply_claude_refresh(oauth: &mut Value, resp: &Value, now_ms: i64) -> Option<String> {
+    let token = resp["access_token"].as_str()?;
+    oauth["accessToken"] = token.into();
+    if let Some(r) = resp["refresh_token"].as_str() {
+        oauth["refreshToken"] = r.into();
+    }
+    if let Some(s) = resp["expires_in"].as_i64() {
+        oauth["expiresAt"] = (now_ms + s * 1000).into();
+    }
+    if let Some(s) = resp["refresh_token_expires_in"].as_i64() {
+        oauth["refreshTokenExpiresAt"] = (now_ms + s * 1000).into();
+    }
+    Some(token.to_owned())
+}
+
+/// Renvoie (jeton, identifiant du compte ChatGPT). Le jeton expiré est rafraîchi au
+/// passage, comme le ferait Codex.
+fn read_codex_token(agent: &ureq::Agent) -> Result<(String, String), String> {
     let dir = std::env::var("CODEX_HOME").unwrap_or_else(|_| format!("{}/.codex", home()));
     let path = format!("{dir}/auth.json");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
-    let json: Value = serde_json::from_str(&text).map_err(|e| format!("{path}{}{e}", tr(" : ", ": ")))?;
+    let (text, mut json) = read_json(&path)?;
     let tokens = &json["tokens"];
     let (Some(token), Some(account)) = (tokens["access_token"].as_str(), tokens["account_id"].as_str()) else {
         return Err(tr(
@@ -153,10 +275,34 @@ fn read_codex_token() -> Result<(String, String), String> {
         )
         .into());
     };
-    if jwt_exp(token).is_some_and(|exp| exp < chrono::Utc::now().timestamp()) {
-        return Err(tr("jeton expiré : lancer codex pour le rafraîchir", "token expired: run codex to refresh it").into());
+    let account = account.to_owned();
+    if !jwt_exp(token).is_some_and(|exp| exp < chrono::Utc::now().timestamp()) {
+        return Ok((token.to_owned(), account));
     }
-    Ok((token.to_owned(), account.to_owned()))
+    let relogin = tr("connexion expirée : lancer codex login", "sign-in expired: run codex login");
+    let refresh_token = tokens["refresh_token"].as_str().ok_or(relogin)?;
+    let body = serde_json::json!({
+        "client_id": CODEX_CLIENT_ID,
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    });
+    let resp = post_refresh(agent, CODEX_TOKEN_URL, &body, relogin)?;
+    let token = apply_codex_refresh(&mut json, &resp, chrono::Utc::now())
+        .ok_or(tr("rafraîchissement du jeton : réponse inattendue", "token refresh: unexpected response"))?;
+    write_json(&path, &text, &json)?;
+    Ok((token, account))
+}
+
+/// Reporte la réponse du service dans `auth.json`, comme Codex. Renvoie le jeton.
+fn apply_codex_refresh(json: &mut Value, resp: &Value, now: DateTime<chrono::Utc>) -> Option<String> {
+    let token = resp["access_token"].as_str()?;
+    for key in ["id_token", "access_token", "refresh_token"] {
+        if let Some(v) = resp[key].as_str() {
+            json["tokens"][key] = v.into();
+        }
+    }
+    json["last_refresh"] = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true).into();
+    Some(token.to_owned())
 }
 
 /// Date d'expiration (secondes Unix) d'un jeton JWT : champ `exp` de sa partie centrale.
@@ -200,14 +346,14 @@ fn fetch() -> Result<Usage, FetchError> {
     let user_agent = concat!("usclaude/", env!("CARGO_PKG_VERSION"));
     // Pour Codex, l'abonnement figure dans la réponse.
     let (request, plan) = if codex() {
-        let (token, account) = read_codex_token()?;
+        let (token, account) = read_codex_token(&agent)?;
         let request = agent
             .get(CODEX_USAGE_URL)
             .header("Authorization", &format!("Bearer {token}"))
             .header("ChatGPT-Account-Id", &account);
         (request, None)
     } else {
-        let (token, plan) = read_token()?;
+        let (token, plan) = read_token(&agent)?;
         let request = agent
             .get(USAGE_URL)
             .header("Authorization", &format!("Bearer {token}"))
@@ -828,6 +974,49 @@ mod tests {
         assert_eq!(jwt_exp("pas-un-jwt"), None);
         assert_eq!(jwt_exp("a.!!!.b"), None);
         assert_eq!(base64url_decode("-_8").unwrap(), [0xfb, 0xff]);
+    }
+
+    #[test]
+    fn claude_refresh_keeps_other_fields() {
+        let mut oauth = serde_json::json!({
+            "accessToken": "ancien", "refreshToken": "r1", "expiresAt": 1,
+            "scopes": ["user:inference"], "subscriptionType": "pro"
+        });
+        let resp = serde_json::json!({"access_token": "nouveau", "expires_in": 28800});
+        assert_eq!(apply_claude_refresh(&mut oauth, &resp, 1000).as_deref(), Some("nouveau"));
+        assert_eq!(oauth["expiresAt"], 28_801_000);
+        assert_eq!(oauth["refreshToken"], "r1", "gardé faute de nouveau");
+        assert_eq!(oauth["subscriptionType"], "pro");
+        let resp = serde_json::json!({"access_token": "a", "refresh_token": "r2"});
+        apply_claude_refresh(&mut oauth, &resp, 0);
+        assert_eq!(oauth["refreshToken"], "r2");
+        assert!(apply_claude_refresh(&mut oauth, &serde_json::json!({"error": "x"}), 0).is_none());
+    }
+
+    #[test]
+    fn codex_refresh_updates_tokens() {
+        let mut json = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {"id_token": "i1", "access_token": "a1", "refresh_token": "r1", "account_id": "acc"},
+            "last_refresh": "2026-09-01T00:00:00Z"
+        });
+        let resp = serde_json::json!({"id_token": "i2", "access_token": "a2", "refresh_token": "r2"});
+        let now = DateTime::parse_from_rfc3339("2026-09-29T20:00:00Z").unwrap().to_utc();
+        assert_eq!(apply_codex_refresh(&mut json, &resp, now).as_deref(), Some("a2"));
+        assert_eq!(json["tokens"]["refresh_token"], "r2");
+        assert_eq!(json["tokens"]["account_id"], "acc");
+        assert_eq!(json["last_refresh"], "2026-09-29T20:00:00.000000000Z");
+    }
+
+    #[test]
+    fn dir_lock_is_exclusive() {
+        let path = std::env::temp_dir().join(format!("usclaude-test-{}.lock-dir", std::process::id()));
+        let path = path.to_str().unwrap().to_owned();
+        let first = lock_dir(path.clone());
+        assert!(first.is_some());
+        assert!(lock_dir(path.clone()).is_none(), "déjà pris");
+        drop(first);
+        assert!(lock_dir(path).is_some(), "libéré à la fin");
     }
 
     #[test]
