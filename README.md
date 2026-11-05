@@ -2,25 +2,42 @@
 
 *[Version française](README.fr.md)*
 
-A small Linux applet that shows your [Claude Code](https://claude.com/claude-code)
-usage limits in the system tray — the same figures as the `/usage` command: the
-5-hour session and the weekly limits, with their reset times.
+A small Linux applet that shows the usage limits of
+[Claude Code](https://claude.com/claude-code), [Codex](https://github.com/openai/codex)
+and [Kimi Code](https://github.com/MoonshotAI/kimi-code) in **three independent system
+tray icons**.
 
 ![usclaude in the XFCE panel, menu open (French locale)](assets/screenshot.png)
 
-The icon shows two gauges, **session** on the left and **week** on the right: green
-below 50 %, orange below 80 %, red above. Details appear on hover and in the menu.
+Each icon has two large gauges: **5-hour session** and **week** for Claude/Codex,
+**5-hour session** and **month** for Kimi. Gauges are green below 50 %, orange below 80 %, and red above. The
+menu also shows every limit's reset time. Icons are provided at 32, 48, 64 and 128 pixels;
+their actual size depends on the panel setting.
+
+Use `usclaude` or `usclaude --claude` for Claude, `usclaude --codex` for Codex and
+`usclaude --kimi` for Kimi. To start all three manually:
+
+```sh
+usclaude --claude &
+usclaude --codex &
+usclaude --kimi &
+```
+
+Each applet has its own settings, cache and **Start at login** entry. Enable that entry in
+each one to restore all three icons at session startup.
 
 Written in Rust with [ksni](https://github.com/iovxw/ksni) (StatusNotifierItem
 protocol, no GTK). A single static binary with no dependencies.
 
-> Independent project, not affiliated with Anthropic. The interface is in English,
-> or in French when the system language is French.
+> Independent project, not affiliated with Anthropic, OpenAI or Moonshot AI. The interface
+> is in English, or in French when the system language is French.
 
 ## Requirements
 
 - **Claude Code signed in with a claude.ai account** (Pro or Max), i.e. via
   `/login`. An API key has no `/usage` limits to show.
+- **Codex and/or Kimi Code signed in** for their respective icons. A missing sign-in
+  does not prevent the other applets from working.
 - **A panel that supports StatusNotifierItem**, the standard tray icon protocol.
   X11 or Wayland makes no difference.
 
@@ -77,18 +94,19 @@ To start it with your session, tick **Start at login** in its menu.
 
 | Entry | Meaning |
 | --- | --- |
-| Limits | Percentage used and reset time of each limit. |
+| Limits | Percentage used and reset time for each of the service's limits. |
 | Refresh | Refresh now. |
 | Settings | Refresh interval: 90 s, 3 min, 5 min or 10 min. |
 | Start at login | Creates or removes the autostart entry. |
 | Restart | Restarts the applet, e.g. after updating the binary. |
 | Quit | Quits. |
 
-Only one instance runs at a time: a second launch exits immediately.
+One instance per service runs at a time: a second launch of the same service exits
+immediately, while Claude, Codex and Kimi can run simultaneously.
 
 ## How it works
 
-The applet queries the same service as `/usage`
+For Claude, the applet queries the same service as `/usage`
 (`https://api.anthropic.com/api/oauth/usage`) with Claude Code's sign-in token,
 read from `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`).
 
@@ -112,13 +130,9 @@ Files used:
 
 ## Codex
 
-```sh
-usclaude --codex &
-```
-
-shows a second icon, with a blue outline, for the
+The Codex applet has two large blue-outlined gauges and starts with `usclaude --codex`. The
 [Codex](https://github.com/openai/codex) limits of a ChatGPT account (5-hour
-session and week), the same figures as Codex's `/status`. Unlike Codex's session
+session and week) are the same figures as Codex's `/status`. Unlike Codex's session
 files, the figures cover every use of the account, on any machine.
 
 The token is read from `~/.codex/auth.json` (or `$CODEX_HOME`), and refreshed as
@@ -127,8 +141,36 @@ the service queried is `https://chatgpt.com/backend-api/wham/usage`, also
 undocumented. This instance has its own settings, cache, lock and autostart entry,
 under the name `usclaude-codex`. `usclaude --codex --print` works too.
 
-The `.deb` package adds a second menu entry, **usclaude (Codex)**, next to the
+The `.deb` package also adds an individual **usclaude (Codex)** menu entry next to the
 Claude one.
+
+## Kimi Code
+
+The Kimi Code applet has two large purple-outlined gauges and starts with
+`usclaude --kimi`. The two
+[Kimi Code](https://github.com/MoonshotAI/kimi-code) gauges represent the **5-hour
+session** and **month**; the menu also details the week. If a window's summary and detailed
+counter disagree, the higher value is kept.
+
+The service queried is `https://api.kimi.com/coding/v1/usages`. The applet reads
+`access_token` from `~/.kimi-code/credentials/kimi-code.json` (or `$KIMI_CODE_HOME`).
+To store a key from the Kimi Code console there:
+
+```json
+{
+  "access_token": "your-key"
+}
+```
+
+Without `expires_at`, this is treated as a long-lived API key. An OAuth token from the CLI
+has an expiry instead: it is reread for every measurement, but not refreshed by the
+applet, to avoid racing the official CLI. Run `kimi` to renew it. `KIMI_CODE_API_KEY`
+remains an alternative that takes priority over the file.
+
+`KIMI_CODE_BASE_URL` can replace the `https://api.kimi.com/coding/v1` base, notably for
+an international account. This instance has its own settings, cache, lock and autostart
+entry, under the name `usclaude-kimi`. `usclaude --kimi --print` works too. The `.deb`
+package similarly adds an individual **usclaude (Kimi Code)** menu entry.
 
 ## Troubleshooting
 
@@ -136,7 +178,9 @@ Claude one.
 usclaude --print
 ```
 
-prints the usage once in the terminal, or the error encountered.
+prints the selected service's usage once in the terminal (Claude by default), or the error
+encountered. Use `usclaude --codex --print` and `usclaude --kimi --print` for the other
+services.
 
 ## Known limitations
 

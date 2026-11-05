@@ -50,6 +50,7 @@ install -d "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/applications" \
 install -m 755 "$BIN" "$ROOT/usr/bin/usclaude"
 install -m 644 packaging/usclaude.desktop "$ROOT/usr/share/applications/usclaude.desktop"
 install -m 644 packaging/usclaude-codex.desktop "$ROOT/usr/share/applications/usclaude-codex.desktop"
+install -m 644 packaging/usclaude-kimi.desktop "$ROOT/usr/share/applications/usclaude-kimi.desktop"
 install -m 644 LICENSE "$ROOT/usr/share/doc/usclaude/copyright"
 install -m 644 README.md README.fr.md "$ROOT/usr/share/doc/usclaude/"
 printf 'usclaude (%s) unstable; urgency=low\n\n  * Paquet construit depuis les sources.\n\n -- niqoz <niqoz@users.noreply.github.com>  %s\n' \
@@ -65,10 +66,10 @@ Priority: optional
 Architecture: amd64
 Maintainer: niqoz <niqoz@users.noreply.github.com>
 Homepage: https://github.com/niqoz/usclaude
-Description: limites d'usage de Claude Code dans la zone de notification
- usclaude affiche dans le panneau les limites de la commande /usage de
- Claude Code : session de 5 heures et limites hebdomadaires, avec l'heure
- de remise à zéro. Nécessite un panneau compatible StatusNotifierItem.
+Description: limites d'usage de Claude, Codex et Kimi dans la zone de notification
+ usclaude affiche dans trois icônes indépendantes les limites de Claude Code,
+ Codex et Kimi Code : sessions de 5 heures, limites hebdomadaires et mensuelle,
+ avec leurs remises à zéro. Nécessite un panneau compatible StatusNotifierItem.
 EOF
 
 fakeroot dpkg-deb --build --root-owner-group "$ROOT" "$DIST/$DEB_NAME.deb" >/dev/null

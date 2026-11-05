@@ -2,24 +2,41 @@
 
 *[English version](README.md)*
 
-Petite applet Linux qui affiche dans la zone de notification les limites d'usage de
-[Claude Code](https://claude.com/claude-code), les mêmes que la commande `/usage` :
-session de 5 heures et limites hebdomadaires, avec l'heure de remise à zéro.
+Petite applet Linux qui affiche les limites d'usage de
+[Claude Code](https://claude.com/claude-code), [Codex](https://github.com/openai/codex)
+et [Kimi Code](https://github.com/MoonshotAI/kimi-code) dans **trois icônes indépendantes**
+de la zone de notification.
 
 ![usclaude dans le panneau XFCE, menu ouvert](assets/screenshot.png)
 
-L'icône montre deux jauges, **session** à gauche et **semaine** à droite, vertes sous
-50 %, orange sous 80 %, rouges au-delà. Le détail s'affiche au survol et dans le menu.
+Chaque icône contient deux grandes jauges : **session de 5 heures** et **semaine** pour
+Claude/Codex, **session de 5 heures** et **mois** pour Kimi. Les jauges sont vertes sous 50 %, orange
+sous 80 %, rouges au-delà. Le menu indique aussi l'heure de remise à zéro de chaque limite.
+Les icônes sont fournies en 32, 48, 64 et 128 pixels ; leur taille réelle dépend du panneau.
+
+Utiliser `usclaude` ou `usclaude --claude` pour Claude, `usclaude --codex` pour Codex et
+`usclaude --kimi` pour Kimi. Pour lancer les trois manuellement :
+
+```sh
+usclaude --claude &
+usclaude --codex &
+usclaude --kimi &
+```
+
+Chaque applet possède ses réglages, son cache et son entrée **Lancer à l'ouverture de
+session**. Activer cette entrée dans chacune pour retrouver les trois icônes au démarrage.
 
 Écrit en Rust avec [ksni](https://github.com/iovxw/ksni) (protocole
 StatusNotifierItem, sans GTK). Un seul binaire statique, sans aucune dépendance.
 
-> Projet indépendant, non affilié à Anthropic.
+> Projet indépendant, non affilié à Anthropic, OpenAI ou Moonshot AI.
 
 ## Prérequis
 
 - **Claude Code connecté avec un compte claude.ai** (Pro ou Max), c'est-à-dire via
   `/login`. Une clé d'API n'a pas de limites `/usage` à afficher.
+- **Codex et/ou Kimi Code connectés** pour leurs icônes respectives. Une connexion
+  manquante n'empêche pas les autres applets de fonctionner.
 - **Un panneau compatible StatusNotifierItem**, le protocole standard des icônes de
   notification. X11 ou Wayland ne change rien.
 
@@ -78,18 +95,19 @@ dans son menu.
 
 | Entrée | Rôle |
 | --- | --- |
-| Limites | Pourcentage utilisé et heure de remise à zéro de chaque limite. |
+| Limites | Pourcentage utilisé et remise à zéro de chaque limite du service. |
 | Actualiser | Nouvelle mesure immédiate. |
 | Réglages | Intervalle de rafraîchissement : 90 s, 3 min, 5 min ou 10 min. |
 | Lancer à l'ouverture de session | Crée ou supprime l'entrée de démarrage automatique. |
 | Redémarrer | Relance l'applet, par exemple après une mise à jour du binaire. |
 | Quitter | Arrête l'applet. |
 
-Une seule instance tourne à la fois : un second lancement s'arrête aussitôt.
+Une seule instance par service tourne à la fois : un second lancement du même service
+s'arrête aussitôt, tandis que Claude, Codex et Kimi peuvent fonctionner simultanément.
 
 ## Fonctionnement
 
-L'applet interroge le même service que `/usage`
+Pour Claude, l'applet interroge le même service que `/usage`
 (`https://api.anthropic.com/api/oauth/usage`) avec le jeton de connexion de Claude
 Code, lu dans `~/.claude/.credentials.json` (ou `$CLAUDE_CONFIG_DIR`).
 
@@ -114,13 +132,10 @@ Fichiers utilisés :
 
 ## Codex
 
-```sh
-usclaude --codex &
-```
-
-affiche une deuxième icône, au contour bleu, pour les limites de
+L'applet Codex possède deux grandes jauges au contour bleu et se lance avec
+`usclaude --codex`. Les limites de
 [Codex](https://github.com/openai/codex) d'un compte ChatGPT (session de 5 heures
-et semaine), les mêmes que la commande `/status` de Codex. Contrairement aux
+et semaine) sont les mêmes que la commande `/status` de Codex. Contrairement aux
 fichiers de session de Codex, les chiffres couvrent toute l'utilisation du compte,
 quelle que soit la machine.
 
@@ -131,8 +146,37 @@ documenté. Cette instance a ses propres réglages, cache, verrou et démarrage
 automatique, sous le nom `usclaude-codex`. `usclaude --codex --print` fonctionne
 aussi.
 
-Le paquet `.deb` ajoute au menu une seconde entrée, **usclaude (Codex)**, à côté de
-l'entrée Claude.
+Le paquet `.deb` ajoute aussi au menu une entrée individuelle **usclaude (Codex)**, à
+côté de l'entrée Claude.
+
+## Kimi Code
+
+L'applet Kimi Code possède deux grandes jauges au contour violet et se lance avec
+`usclaude --kimi`. Les deux jauges de
+[Kimi Code](https://github.com/MoonshotAI/kimi-code) représentent la **session de 5
+heures** et le **mois** ; le menu détaille aussi la semaine. Si le résumé d'une fenêtre et
+son compteur détaillé se contredisent, la valeur la plus élevée est retenue.
+
+Le service interrogé est `https://api.kimi.com/coding/v1/usages`. L'applet lit
+`access_token` dans `~/.kimi-code/credentials/kimi-code.json` (ou `$KIMI_CODE_HOME`).
+Pour y enregistrer une clé API de la console Kimi Code :
+
+```json
+{
+  "access_token": "votre-clé"
+}
+```
+
+Sans `expires_at`, cette clé est traitée comme une clé API longue durée. Un jeton OAuth du
+CLI possède au contraire une échéance : il est relu à chaque mesure, mais n'est pas
+rafraîchi par l'applet, pour ne pas entrer en conflit avec le CLI officiel. Lancer `kimi`
+pour le renouveler. La variable `KIMI_CODE_API_KEY` reste une alternative prioritaire au
+fichier.
+
+`KIMI_CODE_BASE_URL` peut remplacer la base `https://api.kimi.com/coding/v1`, notamment
+pour un compte international. Cette instance a ses propres réglages, cache, verrou et
+démarrage automatique, sous le nom `usclaude-kimi`. `usclaude --kimi --print` fonctionne
+aussi. Le paquet `.deb` ajoute de même une entrée individuelle **usclaude (Kimi Code)**.
 
 ## Diagnostic
 
@@ -140,7 +184,9 @@ l'entrée Claude.
 usclaude --print
 ```
 
-affiche l'usage une fois dans le terminal, ou l'erreur rencontrée.
+affiche une fois dans le terminal l'usage du service choisi (Claude par défaut), ou
+l'erreur rencontrée. Utiliser `usclaude --codex --print` et `usclaude --kimi --print`
+pour les deux autres services.
 
 ## Limites connues
 
