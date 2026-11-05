@@ -86,6 +86,8 @@ dans son menu.
 | Quitter | Arrête l'applet. |
 
 Une seule instance tourne à la fois : un second lancement s'arrête aussitôt.
+À la fermeture de session, l'applet s'arrête avec le bus D-Bus, pour laisser la place à
+celle de la session suivante.
 
 ## Fonctionnement
 

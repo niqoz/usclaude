@@ -84,7 +84,8 @@ To start it with your session, tick **Start at login** in its menu.
 | Restart | Restarts the applet, e.g. after updating the binary. |
 | Quit | Quits. |
 
-Only one instance runs at a time: a second launch exits immediately.
+Only one instance runs at a time: a second launch exits immediately. It exits
+when the session ends (with the D-Bus session bus), leaving room for the next session.
 
 ## How it works
 
