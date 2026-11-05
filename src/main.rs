@@ -873,6 +873,19 @@ fn restart(mode: Mode) {
     }
 }
 
+/// Quitte quand le bus D-Bus de session disparaît (fermeture de session). ksni ne le
+/// signale pas : sans cela, l'instance survivrait sans icône en gardant le verrou, et
+/// celle lancée à la session suivante s'arrêterait aussitôt (« tourne déjà »).
+fn quit_with_session_bus(mode: Mode) {
+    std::thread::spawn(move || {
+        let Ok(conn) = zbus::blocking::Connection::session() else { return };
+        // Le flux de messages ne se termine qu'à la coupure de la connexion.
+        for _ in zbus::blocking::MessageIterator::from(&conn) {}
+        eprintln!("{}: {}", mode.app(), tr("fin de la session, arrêt.", "session ended, exiting."));
+        std::process::exit(0);
+    });
+}
+
 /// Attente après un nouveau refus 429. Le délai `Retry-After` du service s'il y en a un
 /// (jamais sous l'intervalle choisi, au plus `MAX_RETRY_AFTER`) ; sinon le double de
 /// l'attente précédente (ou de l'intervalle au premier refus), plafonné à `MAX_BACKOFF`.
@@ -1288,6 +1301,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    quit_with_session_bus(mode);
 
     let mut backoff = [None; 3];
     let mut next_fetch: [Option<DateTime<Local>>; 3] = [None; 3];

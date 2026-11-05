@@ -104,6 +104,8 @@ dans son menu.
 
 Une seule instance par service tourne à la fois : un second lancement du même service
 s'arrête aussitôt, tandis que Claude, Codex et Kimi peuvent fonctionner simultanément.
+À la fermeture de session, chaque applet s'arrête avec le bus D-Bus, pour laisser la
+place à celle de la session suivante.
 
 ## Fonctionnement
 

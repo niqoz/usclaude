@@ -102,7 +102,8 @@ To start it with your session, tick **Start at login** in its menu.
 | Quit | Quits. |
 
 One instance per service runs at a time: a second launch of the same service exits
-immediately, while Claude, Codex and Kimi can run simultaneously.
+immediately, while Claude, Codex and Kimi can run simultaneously. Each applet exits
+when the session ends (with the D-Bus session bus), leaving room for the next session.
 
 ## How it works
 

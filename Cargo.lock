@@ -1002,6 +1002,7 @@ dependencies = [
  "ksni",
  "serde_json",
  "ureq",
+ "zbus",
 ]
 
 [[package]]
